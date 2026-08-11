@@ -1,0 +1,9 @@
+<Solution>
+  <Project Path="Installer/POTA Check Installer/POTA Check Installer.vdproj" Type="Installer">
+    <BuildType Project="Release" />
+    <Build />
+  </Project>
+  <Project Path="POTA Activator Park Activations.csproj">
+    <BuildType Project="Release" />
+  </Project>
+</Solution>
