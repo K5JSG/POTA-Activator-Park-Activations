@@ -1,0 +1,67 @@
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Windows.Forms;
+
+namespace POTA_Check
+{
+    public partial class HelpForm : Form
+    {
+        // The name of the file we look for next to the .exe. You can open this file
+        // in WordPad (or Word) any time and change the instructions, including
+        // adding real clickable hyperlinks - nothing needs to be recompiled for
+        // your edits to show up.
+        private const string HelpFileName = "HelpContent.rtf";
+
+        public HelpForm()
+        {
+            InitializeComponent();
+            LoadHelpContent();
+            textBoxHelp.LinkClicked += TextBoxHelp_LinkClicked;
+        }
+
+        private void TextBoxHelp_LinkClicked(object? sender, LinkClickedEventArgs e)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = e.LinkText,
+                    UseShellExecute = true
+                };
+                Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Could not open that link: " + ex.Message);
+            }
+        }
+
+        private void LoadHelpContent()
+        {
+            try
+            {
+                // Application.StartupPath is the folder the .exe lives in, so the
+                // help file just needs to sit right alongside
+                // POTA Activator Park Activations.exe.
+                string path = Path.Combine(Application.StartupPath, HelpFileName);
+
+                if (File.Exists(path))
+                {
+                    textBoxHelp.LoadFile(path, RichTextBoxStreamType.RichText);
+                    textBoxHelp.DetectUrls = true;
+                    return;
+                }
+
+                textBoxHelp.Text = "Help file not found." + Environment.NewLine + Environment.NewLine +
+                       $"Expected to find it here:{Environment.NewLine}{path}" + Environment.NewLine +
+                       Environment.NewLine +
+                       $"Create a file named \"{HelpFileName}\" in that folder (WordPad or Word can save one) and put your instructions in it.";
+            }
+            catch (Exception ex)
+            {
+                textBoxHelp.Text = "Could not load the help file: " + ex.Message;
+            }
+        }
+    }
+}
