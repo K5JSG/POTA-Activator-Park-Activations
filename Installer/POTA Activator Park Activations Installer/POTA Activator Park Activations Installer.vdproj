@@ -239,7 +239,7 @@
         {
         "Name" = "8:Microsoft Visual Studio"
         "ProductName" = "8:POTA Activator Park Activations"
-        "ProductCode" = "8:{D3A09054-71A3-4E7D-B785-7E00A3DFCEC1}"
+        "ProductCode" = "8:{A0B84A9B-F221-45BE-9A68-923260849C55}"
         "PackageCode" = "8:{11F24359-F41E-478D-8AD7-2FD5F0167300}"
         "UpgradeCode" = "8:{B863364C-8EA6-4B2B-BB3E-B386AAC5F5AD}"
         "AspNetVersion" = "8:4.0.30319.0"
@@ -247,7 +247,7 @@
         "RemovePreviousVersions" = "11:TRUE"
         "DetectNewerInstalledVersion" = "11:TRUE"
         "InstallAllUsers" = "11:TRUE"
-        "ProductVersion" = "8:1.3.0"
+        "ProductVersion" = "8:1.3.1"
         "Manufacturer" = "8:K5JSG"
         "ARPHELPTELEPHONE" = "8:"
         "ARPHELPLINK" = "8:"

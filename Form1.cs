@@ -160,6 +160,18 @@ namespace PotaActivatorParkActivations
         // Pointing the headers at SystemColors instead - the same colors every
         // other themed control here already uses - fixes that, with one code
         // path that's correct for both light and dark.
+        //
+        // The Reference column's link colors have the same problem for a
+        // different reason: DataGridViewLinkColumn defaults to a fixed blue/
+        // purple/red (LinkColor/VisitedLinkColor/ActiveLinkColor) meant for a
+        // white background, not a SystemColors value, so it doesn't adapt on
+        // its own either - low contrast against a dark row is exactly what
+        // that looks like. SystemColors.HotTrack is the system's own
+        // theme-aware color for exactly this (hyperlink-style UI), so using it
+        // for all three keeps the link readable in both themes without a
+        // separate "is this a completed row" check - CellFormatting below
+        // still overrides these three per-cell for completed rows, where the
+        // link needs to match that row's own text color instead.
         private void ApplyDataGridViewTheme()
         {
             dataGridView1.EnableHeadersVisualStyles = false;
@@ -169,6 +181,14 @@ namespace PotaActivatorParkActivations
             dataGridView1.RowHeadersDefaultCellStyle.ForeColor = SystemColors.ControlText;
             dataGridView1.BackgroundColor = SystemColors.Window;
             dataGridView1.GridColor = SystemColors.ControlDark;
+
+            if (dataGridView1.Columns["colRef"] is DataGridViewLinkColumn refColumn)
+            {
+                refColumn.LinkColor = SystemColors.HotTrack;
+                refColumn.VisitedLinkColor = SystemColors.HotTrack;
+                refColumn.ActiveLinkColor = SystemColors.HotTrack;
+            }
+
             dataGridView1.Invalidate();
         }
 
