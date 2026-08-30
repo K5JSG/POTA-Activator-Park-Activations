@@ -2,7 +2,7 @@
 using System.IO;
 using System.Windows.Forms;
 
-namespace POTA_Check
+namespace PotaActivatorParkActivations
 {
     public partial class AboutForm : Form
     {

@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace POTA_Check
+namespace PotaActivatorParkActivations
 {
     // One park's worth of information, packaged up exactly the way the map page needs it.
     // The [JsonPropertyName] attributes control what the field is called in the JSON/JavaScript
@@ -92,6 +92,16 @@ namespace POTA_Check
   .pota-popup a { color: #1a5fb4; text-decoration: none; font-weight: bold; }
   .pota-popup a:hover { text-decoration: underline; }
   .pota-popup .my-line { margin-top: 6px; color: #2e8b22; font-weight: bold; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1e1e1e; }
+    .legend {
+      background: #2d2d30; color: #e8e8e8;
+      box-shadow: 0 1px 5px rgba(0,0,0,0.6);
+    }
+    .legend-swatch { border-color: #999; }
+    .pota-popup a { color: #6ab0f3; }
+    .pota-popup .my-line { color: #6fdc6f; }
+  }
 </style>
 </head>
 <body>
@@ -181,7 +191,9 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 
 var bounds = [];
 parkData.forEach(function (p) {
-  if (!p.lat && !p.lon) return; // skip parks we never managed to geocode
+  // (0, 0) is what an ungeocoded park looks like here - it's out in the Gulf
+  // of Guinea, nowhere near a real US park, so this only filters those out.
+  if (!p.lat && !p.lon) return;
   var icon = p.completed ? greenIcon : yellowIcon;
   var marker = L.marker([p.lat, p.lon], { icon: icon });
   marker.bindPopup(buildPopupHtml(p));

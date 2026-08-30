@@ -1,4 +1,4 @@
-﻿namespace POTA_Check
+﻿namespace PotaActivatorParkActivations
 {
     partial class AboutForm
     {

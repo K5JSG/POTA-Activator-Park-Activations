@@ -5,7 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace POTA_Check
+namespace PotaActivatorParkActivations
 {
     public class RawPark
     {
@@ -51,10 +51,10 @@ namespace POTA_Check
 
         private static List<RawPark> ParseAllParksCsv(string csv)
         {
-            var lines = csv.Split('\n');
+            var lines = SplitCsvRecords(csv);
             var results = new List<RawPark>();
 
-            for (int i = 1; i < lines.Length; i++)
+            for (int i = 1; i < lines.Count; i++)
             {
                 string line = lines[i].Trim('\r', '\n');
                 if (string.IsNullOrWhiteSpace(line)) continue;
@@ -86,14 +86,6 @@ namespace POTA_Check
             }
 
             return results;
-        }
-
-        // Kept for backward compatibility with any existing caller that wants a
-        // guaranteed-live download with no caching involved.
-        public static async Task<List<RawPark>> DownloadAllParksAsync(HttpClient http)
-        {
-            string csv = await DownloadAllParksCsvAsync(http);
-            return ParseAllParksCsv(csv);
         }
 
         // Returns the POTA master park list, preferring a local cache to avoid
@@ -201,7 +193,18 @@ namespace POTA_Check
         // for a large state. Still runs on a background thread via Task.Run so a
         // very large batch never blocks the UI, and still reports progress the
         // same way calling code already expects.
-        public static async Task GeocodeParksAsync(HttpClient http, List<ParkRecord> parks, string selectedStateCode, IProgress<int> progress)
+        public static Task GeocodeParksAsync(List<ParkRecord> parks, string selectedStateCode, IProgress<int> progress) =>
+            GeocodeCoreAsync(parks, progress, selectedStateCode);
+
+        public static Task GeocodeExtraParksAsync(List<ParkRecord> parks, IProgress<int> progress) =>
+            GeocodeCoreAsync(parks, progress, null);
+
+        // Shared by both overloads above. selectedStateCode is only non-null for
+        // GeocodeParksAsync: that's the one that needs it, to flag a multi-state
+        // park for exclusion when this particular point actually falls outside
+        // the state the user asked for. GeocodeExtraParksAsync's parks (found via
+        // an ADIF reference, not a state filter) never go through that check.
+        private static async Task GeocodeCoreAsync(List<ParkRecord> parks, IProgress<int> progress, string? selectedStateCode)
         {
             int total = parks.Count;
             if (total == 0) return;
@@ -216,33 +219,11 @@ namespace POTA_Check
                     park.State = stateAbbrev;
                     park.ElevationFeet = ElevationLookupService.GetElevationFeet(park.Reference);
 
-                    if (park.MultiState && !string.IsNullOrEmpty(stateAbbrev) &&
+                    if (selectedStateCode != null && park.MultiState && !string.IsNullOrEmpty(stateAbbrev) &&
                         !string.Equals(stateAbbrev, selectedStateCode, StringComparison.OrdinalIgnoreCase))
                     {
                         park.Exclude = true;
                     }
-
-                    done++;
-                    if (done % 10 == 0 || done == total)
-                        progress.Report((int)(done * 100.0 / total));
-                }
-            });
-        }
-
-        public static async Task GeocodeExtraParksAsync(HttpClient http, List<ParkRecord> parks, IProgress<int> progress)
-        {
-            int total = parks.Count;
-            if (total == 0) return;
-
-            await Task.Run(() =>
-            {
-                int done = 0;
-                foreach (var park in parks)
-                {
-                    var (county, stateAbbrev) = CountyLookupService.FindCounty(park.Latitude, park.Longitude);
-                    park.County = county;
-                    park.State = stateAbbrev;
-                    park.ElevationFeet = ElevationLookupService.GetElevationFeet(park.Reference);
 
                     done++;
                     if (done % 10 == 0 || done == total)
@@ -376,7 +357,7 @@ namespace POTA_Check
             {
                 if (string.IsNullOrWhiteSpace(record)) continue;
 
-                string? myParkRefs = null;
+                List<string>? myParkRefs = null;
                 string? qsoDate = null;
 
                 foreach (Match m in tagRegex.Matches(record))
@@ -394,7 +375,13 @@ namespace POTA_Check
                     if (tag.Equals("MY_SIG_INFO", StringComparison.OrdinalIgnoreCase) ||
                         tag.Equals("MY_POTA_REF", StringComparison.OrdinalIgnoreCase))
                     {
-                        myParkRefs = value;
+                        // A record can legitimately carry both tags (older loggers
+                        // wrote MY_POTA_REF; newer ones pair MY_SIG=POTA with
+                        // MY_SIG_INFO) - collecting every occurrence, rather than
+                        // keeping only the last one seen, means the full set of
+                        // refs you've ever activated is simply this dictionary's
+                        // keys, with no separate pass over the file needed for it.
+                        (myParkRefs ??= new List<string>()).Add(value);
                     }
                     else if (tag.Equals("QSO_DATE", StringComparison.OrdinalIgnoreCase))
                     {
@@ -414,18 +401,21 @@ namespace POTA_Check
 
                 // A single QSO can list more than one park reference (a "two-fer" -
                 // activating two parks at the same spot), separated by commas.
-                foreach (string part in myParkRefs.Split(','))
+                foreach (string refValue in myParkRefs)
                 {
-                    string cleaned = part.Trim();
-                    if (string.IsNullOrWhiteSpace(cleaned)) continue;
-
-                    if (!result.TryGetValue(cleaned, out var list))
+                    foreach (string part in refValue.Split(','))
                     {
-                        list = new List<DateTime>();
-                        result[cleaned] = list;
+                        string cleaned = part.Trim();
+                        if (string.IsNullOrWhiteSpace(cleaned)) continue;
+
+                        if (!result.TryGetValue(cleaned, out var list))
+                        {
+                            list = new List<DateTime>();
+                            result[cleaned] = list;
+                        }
+                        if (parsedDate.HasValue)
+                            list.Add(parsedDate.Value);
                     }
-                    if (parsedDate.HasValue)
-                        list.Add(parsedDate.Value);
                 }
             }
 
@@ -449,17 +439,17 @@ namespace POTA_Check
             var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (!File.Exists(path)) return result;
 
-            string[] lines;
+            string text;
             try
             {
-                lines = File.ReadAllLines(path);
+                text = File.ReadAllText(path);
             }
             catch
             {
                 return result;
             }
 
-            foreach (var rawLine in lines)
+            foreach (var rawLine in SplitCsvRecords(text))
             {
                 string line = rawLine.Trim();
                 if (string.IsNullOrWhiteSpace(line)) continue;
@@ -495,6 +485,38 @@ namespace POTA_Check
             }
 
             return result;
+        }
+
+        // Splits raw CSV text into logical records (one per row) the same way
+        // csv.Split('\n') does for the common case, except a '\n' that falls
+        // inside a quoted field (a field value that itself contains a literal
+        // newline) is treated as part of that field's value instead of ending
+        // the record early, which a plain Split('\n') would get wrong.
+        private static List<string> SplitCsvRecords(string csv)
+        {
+            var records = new List<string>();
+            var rawLines = csv.Split('\n');
+            string? pending = null;
+
+            foreach (var rawLine in rawLines)
+            {
+                pending = pending == null ? rawLine : pending + "\n" + rawLine;
+
+                // An even number of quote characters means every quoted field
+                // opened so far has also been closed - this record is complete.
+                // An odd count means we're still inside a quoted field that
+                // contains a literal newline, so the next raw line is really a
+                // continuation of this same record, not a new one.
+                int quoteCount = pending.Length - pending.Replace("\"", "").Length;
+                if (quoteCount % 2 == 0)
+                {
+                    records.Add(pending);
+                    pending = null;
+                }
+            }
+
+            if (pending != null) records.Add(pending);
+            return records;
         }
 
         public static List<string> ParseCsvLine(string line)
@@ -540,38 +562,6 @@ namespace POTA_Check
             }
             fields.Add(sb.ToString());
             return fields;
-        }
-
-        public static HashSet<string> ParseAdifCompletedRefs(string adifText)
-        {
-            var refs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var tagRegex = new Regex(@"<(?<tag>[a-zA-Z_]+)(:(?<len>\d+))?(:[a-zA-Z]+)?>", RegexOptions.IgnoreCase);
-            var matches = tagRegex.Matches(adifText);
-
-            var wantedTags = new[] { "MY_SIG_INFO", "MY_POTA_REF" };
-
-            foreach (Match m in matches)
-            {
-                string tag = m.Groups["tag"].Value;
-                if (!wantedTags.Any(t => tag.Equals(t, StringComparison.OrdinalIgnoreCase))) continue;
-                if (!m.Groups["len"].Success) continue;
-
-                int len = int.Parse(m.Groups["len"].Value);
-                int start = m.Index + m.Length;
-                if (start + len > adifText.Length) continue;
-
-                string rawValue = adifText.Substring(start, len).Trim();
-                if (string.IsNullOrWhiteSpace(rawValue)) continue;
-
-                foreach (string part in rawValue.Split(','))
-                {
-                    string cleaned = part.Trim();
-                    if (!string.IsNullOrWhiteSpace(cleaned))
-                        refs.Add(cleaned);
-                }
-            }
-
-            return refs;
         }
 
         public static void ExportCsv(string path, List<ParkRecord> parks)

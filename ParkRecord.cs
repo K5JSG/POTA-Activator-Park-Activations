@@ -1,4 +1,4 @@
-﻿namespace POTA_Check
+﻿namespace PotaActivatorParkActivations
 {
     public class ParkRecord
     {

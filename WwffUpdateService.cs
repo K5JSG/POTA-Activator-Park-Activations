@@ -8,7 +8,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using ExcelDataReader;
 
-namespace POTA_Check
+namespace PotaActivatorParkActivations
 {
     // Converts the KFF-POTA cross reference spreadsheet published by WWFF/KFF into
     // the simple KffCrossReference.csv file this app reads. The "POTA to KFF" tab in

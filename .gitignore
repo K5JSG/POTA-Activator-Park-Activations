@@ -361,3 +361,8 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Claude Code session config, hooks, and MCP server config - local tooling,
+# not part of the project.
+.claude/
+.mcp.json

@@ -1,9 +1,10 @@
 using System;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
 
-namespace POTA_Check
+namespace PotaActivatorParkActivations
 {
     public partial class HelpForm : Form
     {
@@ -17,6 +18,17 @@ namespace POTA_Check
         {
             InitializeComponent();
             LoadHelpContent();
+
+            // HelpContent.rtf is authored (in WordPad/Word) assuming a normal
+            // white page, with its own explicit black text color baked into the
+            // file - that color wins over the app's dark mode regardless of this
+            // control's own background, so leaving the background dark would
+            // make the text nearly unreadable. Keeping this one control a fixed
+            // white page - like a document viewer would - avoids that instead of
+            // fighting arbitrary user-edited RTF content.
+            textBoxHelp.BackColor = Color.White;
+            textBoxHelp.ForeColor = Color.Black;
+
             textBoxHelp.LinkClicked += TextBoxHelp_LinkClicked;
         }
 

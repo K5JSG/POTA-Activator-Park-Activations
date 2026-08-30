@@ -3,12 +3,12 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 
-namespace POTA_Check
+namespace PotaActivatorParkActivations
 {
     // Looks up elevation for a park by its POTA reference, using a
     // pre-generated lookup table (ParkElevations.csv) built by querying a real
-    // elevation API for every park's exact coordinate - see
-    // GenerateParkElevations.ps1.
+    // elevation API for every park's exact coordinate - see the
+    // GenerateParkElevations tool (Tools/GenerateParkElevations).
     //
     // This is far more accurate than a bundled raster grid could ever be at a
     // reasonable size: it only needs data for the actual, finite set of park
@@ -16,7 +16,7 @@ namespace POTA_Check
     // no resolution/file-size tradeoff, no interpolation, and no coastline
     // artifacts to correct for. It's still fully offline at runtime: the
     // lookup table is generated once (or refreshed occasionally by re-running
-    // the script) and just read from disk, with no network call needed while
+    // that tool) and just read from disk, with no network call needed while
     // using the app.
     public static class ElevationLookupService
     {
