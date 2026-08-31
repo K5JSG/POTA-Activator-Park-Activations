@@ -165,13 +165,16 @@ namespace PotaActivatorParkActivations
         // different reason: DataGridViewLinkColumn defaults to a fixed blue/
         // purple/red (LinkColor/VisitedLinkColor/ActiveLinkColor) meant for a
         // white background, not a SystemColors value, so it doesn't adapt on
-        // its own either - low contrast against a dark row is exactly what
-        // that looks like. SystemColors.HotTrack is the system's own
-        // theme-aware color for exactly this (hyperlink-style UI), so using it
-        // for all three keeps the link readable in both themes without a
-        // separate "is this a completed row" check - CellFormatting below
-        // still overrides these three per-cell for completed rows, where the
-        // link needs to match that row's own text color instead.
+        // its own either. Worse, a link cell always paints in its LinkColor
+        // even while selected - it never switches to SelectionForeColor - so
+        // a fixed color that happens to be close to SystemColors.Highlight
+        // (the selected-row background in dark mode) goes low-contrast the
+        // moment you click the row. CellFormatting below sets the per-row
+        // link color explicitly based on selection state instead, so this
+        // just needs a readable, theme-neutral default for the moment before
+        // the grid is populated. CellFormatting also still overrides these
+        // for completed rows, where the link needs to match that row's own
+        // text color instead.
         private void ApplyDataGridViewTheme()
         {
             dataGridView1.EnableHeadersVisualStyles = false;
@@ -184,9 +187,9 @@ namespace PotaActivatorParkActivations
 
             if (dataGridView1.Columns["colRef"] is DataGridViewLinkColumn refColumn)
             {
-                refColumn.LinkColor = SystemColors.HotTrack;
-                refColumn.VisitedLinkColor = SystemColors.HotTrack;
-                refColumn.ActiveLinkColor = SystemColors.HotTrack;
+                refColumn.LinkColor = Color.White;
+                refColumn.VisitedLinkColor = Color.White;
+                refColumn.ActiveLinkColor = Color.White;
             }
 
             dataGridView1.Invalidate();
@@ -440,6 +443,18 @@ namespace PotaActivatorParkActivations
                     linkCell.ActiveLinkColor = e.CellStyle.ForeColor;
                     linkCell.VisitedLinkColor = e.CellStyle.ForeColor;
                 }
+            }
+            else if (dataGridView1.Columns[e.ColumnIndex].Name == "colRef" &&
+                dataGridView1.Rows[e.RowIndex].Cells[e.ColumnIndex] is DataGridViewLinkCell refLinkCell)
+            {
+                // DataGridViewLinkCell always paints in LinkColor, even when the
+                // row is selected - it doesn't switch to SelectionForeColor the
+                // way normal cells do. So the selected/unselected swap has to be
+                // done by hand here rather than relying on cell style colors.
+                Color linkColor = dataGridView1.Rows[e.RowIndex].Selected ? Color.Black : Color.White;
+                refLinkCell.LinkColor = linkColor;
+                refLinkCell.ActiveLinkColor = linkColor;
+                refLinkCell.VisitedLinkColor = linkColor;
             }
         }
 
