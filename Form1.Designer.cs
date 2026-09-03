@@ -40,7 +40,7 @@
             menuStrip1.Items.AddRange(new ToolStripItem[] { helpToolStripMenuItem, aboutToolStripMenuItem });
             menuStrip1.Location = new Point(0, 0);
             menuStrip1.Name = "menuStrip1";
-            menuStrip1.Size = new Size(1062, 24);
+            menuStrip1.Size = new Size(1244, 24);
             menuStrip1.TabIndex = 10;
             menuStrip1.Text = "menuStrip1";
             // 
@@ -138,7 +138,7 @@
             // 
             progressBar1.Location = new Point(12, 105);
             progressBar1.Name = "progressBar1";
-            progressBar1.Size = new Size(1039, 15);
+            progressBar1.Size = new Size(1220, 15);
             progressBar1.TabIndex = 2;
             // 
             // labelStatus
@@ -162,7 +162,7 @@
             dataGridView1.ReadOnly = true;
             dataGridView1.RowHeadersWidth = 25;
             dataGridView1.SelectionMode = DataGridViewSelectionMode.CellSelect;
-            dataGridView1.Size = new Size(1038, 470);
+            dataGridView1.Size = new Size(1220, 470);
             dataGridView1.TabIndex = 0;
             // 
             // labelSearch
@@ -185,7 +185,7 @@
             // 
             // Form1
             // 
-            ClientSize = new Size(1062, 639);
+            ClientSize = new Size(1244, 639);
             Controls.Add(dataGridView1);
             Controls.Add(labelStatus);
             Controls.Add(progressBar1);

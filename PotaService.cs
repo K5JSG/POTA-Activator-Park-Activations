@@ -487,6 +487,84 @@ namespace PotaActivatorParkActivations
             return result;
         }
 
+        // Reads the KFF-reference -> name lookup written alongside
+        // KffCrossReference.csv by WwffUpdateService.ConvertXlsToCsv
+        // ("KFF,Name" - one row per distinct KFF reference, e.g.
+        // "KFF-0019,Cumberland Gap (KY)"). Same tolerant behavior as
+        // LoadKffCrossReference above: a missing or unreadable file just means
+        // no names are available yet, not an error.
+        public static Dictionary<string, string> LoadKffNames(string path)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (!File.Exists(path)) return result;
+
+            string text;
+            try
+            {
+                text = File.ReadAllText(path);
+            }
+            catch
+            {
+                return result;
+            }
+
+            foreach (var rawLine in SplitCsvRecords(text))
+            {
+                string line = rawLine.Trim();
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                var fields = ParseCsvLine(line);
+                if (fields.Count < 2) continue;
+
+                string kffRef = fields[0].Trim();
+                string name = fields[1].Trim();
+                if (string.IsNullOrWhiteSpace(kffRef) || string.IsNullOrWhiteSpace(name)) continue;
+                if (kffRef.Equals("KFF", StringComparison.OrdinalIgnoreCase)) continue; // header row
+
+                result[kffRef] = name;
+            }
+
+            return result;
+        }
+
+        // A park that spans multiple states can have a combined KFF field like
+        // "KFF-0019 (KY); KFF-4586 (TN); KFF-4587 (VA)" - one KFF ID per state
+        // (see WwffUpdateService.ConvertXlsToCsv). Since the app only ever shows
+        // parks for one state at a time, this picks out just the entry for
+        // stateCode and strips the now-redundant "(XX)" label.
+        //
+        // Returns the value unchanged if there's nothing to split (the ordinary
+        // single-KFF case), or if no segment's label matches stateCode - which
+        // happens for the handful of National Forest entries WwffUpdateService
+        // labels by sub-unit name instead of state (e.g. "KFF-1 (Bridger)"); with
+        // no state code to match there, showing the full combined value is safer
+        // than guessing which sub-unit is this state's.
+        public static string SelectKffForState(string rawKff, string stateCode)
+        {
+            if (string.IsNullOrWhiteSpace(rawKff) || !rawKff.Contains(';'))
+                return rawKff;
+
+            string? match = null;
+            int matchCount = 0;
+
+            foreach (var rawSegment in rawKff.Split(';'))
+            {
+                string segment = rawSegment.Trim();
+                int openParen = segment.LastIndexOf('(');
+                int closeParen = segment.LastIndexOf(')');
+                if (openParen < 0 || closeParen != segment.Length - 1 || closeParen <= openParen) continue;
+
+                string label = segment.Substring(openParen + 1, closeParen - openParen - 1).Trim();
+                if (label.Equals(stateCode, StringComparison.OrdinalIgnoreCase))
+                {
+                    match = segment.Substring(0, openParen).Trim();
+                    matchCount++;
+                }
+            }
+
+            return matchCount == 1 ? match! : rawKff;
+        }
+
         // Splits raw CSV text into logical records (one per row) the same way
         // csv.Split('\n') does for the common case, except a '\n' that falls
         // inside a quoted field (a field value that itself contains a literal
@@ -567,7 +645,7 @@ namespace PotaActivatorParkActivations
         public static void ExportCsv(string path, List<ParkRecord> parks)
         {
             using var writer = new StreamWriter(path, false, Encoding.UTF8);
-            writer.WriteLine("Reference,Name,Latitude,Longitude,Grid,Elevation (ft),County,KFF,State,Completed");
+            writer.WriteLine("Reference,Name,Latitude,Longitude,Grid,Elevation (ft),County,Xfer's,KFF,State,Completed");
 
             foreach (var p in parks)
             {
@@ -579,6 +657,7 @@ namespace PotaActivatorParkActivations
                     Csv(p.Grid),
                     p.ElevationFeet.HasValue ? Math.Round(p.ElevationFeet.Value).ToString(CultureInfo.InvariantCulture) : "",
                     Csv(p.County),
+                    Csv(p.Fers),
                     Csv(p.Kff),
                     Csv(p.State),
                     p.Completed ? "Yes" : "No"));
@@ -590,7 +669,7 @@ namespace PotaActivatorParkActivations
             using var workbook = new XLWorkbook();
             var ws = workbook.Worksheets.Add("Parks");
 
-            string[] headers = { "Reference", "Name", "Latitude", "Longitude", "Grid", "Elevation (ft)", "County", "KFF", "State", "Completed" };
+            string[] headers = { "Reference", "Name", "Latitude", "Longitude", "Grid", "Elevation (ft)", "County", "Xfer's", "KFF", "State", "Completed" };
             for (int c = 0; c < headers.Length; c++)
             {
                 ws.Cell(1, c + 1).Value = headers[c];
@@ -608,13 +687,14 @@ namespace PotaActivatorParkActivations
                 if (p.ElevationFeet.HasValue)
                     ws.Cell(row, 6).Value = Math.Round(p.ElevationFeet.Value);
                 ws.Cell(row, 7).Value = p.County;
-                ws.Cell(row, 8).Value = p.Kff;
-                ws.Cell(row, 9).Value = p.State;
-                ws.Cell(row, 10).Value = p.Completed ? "Yes" : "No";
+                ws.Cell(row, 8).Value = p.Fers;
+                ws.Cell(row, 9).Value = p.Kff;
+                ws.Cell(row, 10).Value = p.State;
+                ws.Cell(row, 11).Value = p.Completed ? "Yes" : "No";
 
                 if (p.Completed)
                 {
-                    var rowRange = ws.Range(row, 1, row, 10);
+                    var rowRange = ws.Range(row, 1, row, 11);
                     rowRange.Style.Fill.BackgroundColor = p.OutOfState ? XLColor.Orange : XLColor.IndianRed;
                     rowRange.Style.Font.FontColor = XLColor.Black;
                     rowRange.Style.Font.Strikethrough = true;

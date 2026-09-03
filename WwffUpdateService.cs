@@ -39,8 +39,13 @@ namespace PotaActivatorParkActivations
         }
 
         // Reads the given .xls/.xlsx workbook, finds its "POTA to KFF" tab, and
-        // writes a cleaned-up KffCrossReference.csv to outputCsvPath.
-        public static UpdateResult ConvertXlsToCsv(string sourceFilePath, string outputCsvPath)
+        // writes a cleaned-up KffCrossReference.csv to outputCsvPath. When
+        // outputNamesCsvPath is given, also writes a second, small
+        // "KFF,Name" file mapping each individual KFF reference to its own
+        // name as recorded in the spreadsheet (e.g. "Cumberland Gap (KY)") -
+        // kept separate because a multi-state park's several KFF numbers each
+        // have their own name, not one shared with the POTA park's own name.
+        public static UpdateResult ConvertXlsToCsv(string sourceFilePath, string outputCsvPath, string? outputNamesCsvPath = null)
         {
             var result = new UpdateResult();
             try
@@ -81,6 +86,7 @@ namespace PotaActivatorParkActivations
                 }
 
                 var lines = new List<string> { "POTA,KFF" };
+                var kffNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 int mappingCount = 0;
 
                 foreach (var pota in groups.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
@@ -97,6 +103,12 @@ namespace PotaActivatorParkActivations
 
                     if (real.Count == 0) continue;
 
+                    foreach (var entry in real)
+                    {
+                        if (!string.IsNullOrWhiteSpace(entry.Name))
+                            kffNames[entry.Kff] = entry.Name;
+                    }
+
                     string kffField = real.Count == 1
                         ? real[0].Kff
                         : string.Join("; ", real.Select(entry => $"{entry.Kff} ({GetLabel(entry.Name)})"));
@@ -106,6 +118,14 @@ namespace PotaActivatorParkActivations
                 }
 
                 File.WriteAllLines(outputCsvPath, lines, Encoding.UTF8);
+
+                if (outputNamesCsvPath != null)
+                {
+                    var nameLines = new List<string> { "KFF,Name" };
+                    foreach (var kv in kffNames.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
+                        nameLines.Add($"{CsvField(kv.Key)},{CsvField(kv.Value)}");
+                    File.WriteAllLines(outputNamesCsvPath, nameLines, Encoding.UTF8);
+                }
 
                 result.Success = true;
                 result.TotalMappings = mappingCount;
