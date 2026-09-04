@@ -18,6 +18,30 @@ namespace PotaActivatorParkActivations
         private readonly HttpClient _http = new HttpClient();
         private List<ParkRecord> _parks = new List<ParkRecord>();
         private List<RawPark> _allRawParks = new List<RawPark>();
+
+        // The current state's own boundary polygons and national trail
+        // routes - set alongside _parks in buttonLoadParks_Click (originally
+        // just local variables there, used only for Xfer detection). Kept
+        // here too so buttonShowMap_Click can offer them as toggleable map
+        // layers without re-downloading anything.
+        private List<FerLookupService.BoundaryFeature> _boundaries = new List<FerLookupService.BoundaryFeature>();
+        private List<FerLookupService.TrailRoute> _trails = new List<FerLookupService.TrailRoute>();
+
+        // The HTML from the most recent buttonShowMap_Click, kept so
+        // buttonSaveMap_Click can write out a copy without re-fetching
+        // activation info. Cleared (and buttonSaveMap disabled - see
+        // UpdateButtonStates) whenever _adifLoaded resets to false, since
+        // that's exactly when the underlying data a map would show goes
+        // stale.
+        private string? _lastMapHtml;
+
+        // Files this program writes under %TEMP% during a session (the map
+        // HTML buttonShowMap_Click opens in the browser, and the WWFF .xls
+        // download in TryAutoDownloadWwffFileAsync) - deleted on close, since
+        // nothing here needs to outlive the run that created it. Distinct
+        // from GetWritableAppDataFolder()'s caches, which are deliberately
+        // kept between runs.
+        private readonly List<string> _tempFilesToCleanUp = new List<string>();
         private Font? _strikeFont;
         // Shared by the Xfer's and KFF Ref columns' hover tooltips - only one
         // can be showing at a time anyway, so one ToolTip/key pair covers
@@ -195,6 +219,7 @@ namespace PotaActivatorParkActivations
             ApplyDataGridViewTheme();
             SystemEvents.UserPreferenceChanged += SystemEvents_UserPreferenceChanged;
             FormClosed += (s, e) => SystemEvents.UserPreferenceChanged -= SystemEvents_UserPreferenceChanged;
+            FormClosed += (s, e) => CleanUpTempFiles();
 
             comboBoxState.SelectedIndexChanged += ComboBoxState_SelectedIndexChanged;
             UpdateButtonStates();
@@ -370,6 +395,7 @@ namespace PotaActivatorParkActivations
 
                 string tempPath = Path.Combine(Path.GetTempPath(), fileName);
                 await File.WriteAllBytesAsync(tempPath, fileBytes);
+                _tempFilesToCleanUp.Add(tempPath);
                 return (tempPath, "OK");
             }
             catch (Exception ex)
@@ -428,7 +454,28 @@ namespace PotaActivatorParkActivations
         {
             _parksLoaded = false;
             _adifLoaded = false;
+            _lastMapHtml = null;
             UpdateButtonStates();
+        }
+
+        // Best-effort delete of every temp file this session wrote (see
+        // _tempFilesToCleanUp) - run once, on close, rather than after each
+        // individual use, since the map file in particular needs to survive
+        // at least as long as the browser tab showing it stays open.
+        private void CleanUpTempFiles()
+        {
+            foreach (var path in _tempFilesToCleanUp)
+            {
+                try
+                {
+                    if (File.Exists(path)) File.Delete(path);
+                }
+                catch
+                {
+                    // Not worth bothering the user with on their way out -
+                    // e.g. a browser still has the map file open/locked.
+                }
+            }
         }
 
         // Colors a button Kelly Green with white text when it's the natural next
@@ -470,6 +517,11 @@ namespace PotaActivatorParkActivations
             SetButtonHighlight(buttonExportCsv, _adifLoaded);
             SetButtonHighlight(buttonExportExcel, _adifLoaded);
             SetButtonHighlight(buttonShowMap, _adifLoaded);
+
+            // Not part of the highlighted "next step" chain above - it's an
+            // optional follow-up to Show Map, not something the workflow
+            // pushes the user toward.
+            buttonSaveMap.Enabled = _lastMapHtml != null;
         }
 
         private void DataGridView1_CellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
@@ -750,6 +802,7 @@ namespace PotaActivatorParkActivations
                 var boundaries = await FerLookupService.EnsureBoundariesAsync(
                     _http, GetWritableAppDataFolder(), stateCode, BoundaryRefreshInterval,
                     msg => labelStatus.Text = msg);
+                _boundaries = boundaries;
                 // ComputeFers is given only this state's own parks and only this
                 // state's own boundary polygons, so every reference it returns is
                 // guaranteed to already be one of _parks - never a park from a
@@ -765,6 +818,7 @@ namespace PotaActivatorParkActivations
                 var trails = await FerLookupService.EnsureTrailRoutesAsync(
                     _http, GetWritableAppDataFolder(), TrailRefreshInterval,
                     msg => labelStatus.Text = msg);
+                _trails = trails;
                 // candidates (not _parks) is the owner search list here - it's
                 // the pre-exclusion set, which still includes a multi-state
                 // national trail like the Appalachian Trail even though
@@ -820,6 +874,7 @@ namespace PotaActivatorParkActivations
                 BindGrid();
                 _parksLoaded = true;
                 _adifLoaded = false;
+                _lastMapHtml = null;
 
                 // The Xfer's column is a candidate list derived from real boundary
                 // and trail-route data matched to parks by name, not authoritative
@@ -1017,9 +1072,11 @@ namespace PotaActivatorParkActivations
                     mapParks.Add(dto);
                 }
 
-                string html = MapService.BuildMapHtml(mapParks);
+                string html = MapService.BuildMapHtml(mapParks, BuildBoundaryLayerDtos());
                 string tempPath = Path.Combine(Path.GetTempPath(), "POTAActivatorParkActivations_Map_" + Guid.NewGuid().ToString("N") + ".html");
                 File.WriteAllText(tempPath, html, Encoding.UTF8);
+                _tempFilesToCleanUp.Add(tempPath);
+                _lastMapHtml = html;
 
                 var psi = new ProcessStartInfo
                 {
@@ -1038,6 +1095,198 @@ namespace PotaActivatorParkActivations
             finally
             {
                 SetBusy(false);
+            }
+        }
+
+        // A few national-trail names come through from potamap.ol's source
+        // data looking rougher than the rest (see FerLookupService -
+        // ComputeTrailFers relies on the exact original values for matching,
+        // so this cleanup is applied here, purely for map display, rather
+        // than to TrailRoute.Name itself).
+        private static readonly Dictionary<string, string> TrailDisplayNameOverrides =
+            new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["ICE_AGE"] = "Ice Age Trail",
+            ["Appalachian trail"] = "Appalachian Trail",
+            ["Sante Fe NHT"] = "Santa Fe NHT",
+        };
+
+        private static string PrettifyTrailName(string name) =>
+            TrailDisplayNameOverrides.TryGetValue(name, out var pretty) ? pretty : name;
+
+        // Groups _boundaries by their source layer (PAD-US, Community, EC,
+        // ...) and adds each of _trails as its own layer, for the map's
+        // toggleable boundary/trail overlays - see MapBoundaryLayerDto.
+        // Ordered alphabetically (areas first, then trails) so a layer sits
+        // in the same spot in the checkbox list every time, rather than
+        // shuffling with download order.
+        // Layers left out of the map's checkbox list specifically (not out of
+        // n-fer detection - _boundaries still includes these for ComputeFers,
+        // they're just not offered as a toggleable overlay). FFMA and
+        // Counties don't need an entry here since EnsureBoundariesAsync never
+        // downloads them as boundaries in the first place - see
+        // FerLookupService.DownloadSourceIndexAsync.
+        private static readonly HashSet<string> ExcludedMapLayerNames =
+            new(StringComparer.OrdinalIgnoreCase) { "Community" };
+
+        private List<MapBoundaryLayerDto> BuildBoundaryLayerDtos()
+        {
+            var layers = new List<MapBoundaryLayerDto>();
+
+            var areaGroups = _boundaries
+                .Where(b => !string.IsNullOrWhiteSpace(b.Layer) && !ExcludedMapLayerNames.Contains(b.Layer))
+                .GroupBy(b => b.Layer, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase);
+            foreach (var group in areaGroups)
+            {
+                var layerDto = new MapBoundaryLayerDto { Name = group.Key, IsLine = false };
+                foreach (var boundary in group)
+                    layerDto.Features.Add(BuildAreaFeatureDto(boundary));
+                layers.Add(layerDto);
+            }
+
+            var trailsByName = GetTrailsNearLoadedState()
+                .OrderBy(t => PrettifyTrailName(t.Name), StringComparer.OrdinalIgnoreCase);
+            foreach (var trail in trailsByName)
+            {
+                var layerDto = new MapBoundaryLayerDto { Name = PrettifyTrailName(trail.Name), IsLine = true };
+                layerDto.Features.Add(BuildTrailFeatureDto(trail));
+                layers.Add(layerDto);
+            }
+
+            return layers;
+        }
+
+        // _trails (unlike _boundaries) isn't already scoped to the loaded
+        // state - EnsureTrailRoutesAsync downloads every national trail
+        // nationwide once, shared across all states, since a single route
+        // can cross many of them (see FerLookupService). Narrowed here to
+        // just the trails that actually pass near the loaded state's parks,
+        // padded by ~1 degree (roughly 50-70 miles) so a trail that only
+        // clips a corner - where no park happens to sit right at that edge -
+        // still shows up. Otherwise every state's map would offer the same
+        // ~16 nationwide trail checkboxes regardless of relevance (e.g.
+        // California NHT showing up while viewing Alabama).
+        //
+        // Tests each trail's actual vertices against proximity to an actual
+        // loaded park, not against a single bounding rectangle spanning all
+        // of them - confirmed necessary, not just theoretical: New York's
+        // parks range from NYC (~lat 40.5) to the western Southern Tier
+        // (~lat 42) to the Adirondacks (~lat 45), so the rectangle spanning
+        // all of them has a whole southwestern corner - roughly Pittsburgh -
+        // that isn't really near any of them. A padded-rectangle-only test
+        // let Lewis and Clark NHT's real Pittsburgh-departure segment (which
+        // has nothing to do with NY) fall inside that corner and pass.
+        private List<FerLookupService.TrailRoute> GetTrailsNearLoadedState()
+        {
+            const double padDegrees = 0.5;
+
+            var parkPoints = _parks
+                // (0, 0) is what an ungeocoded park looks like - see MapService.
+                .Where(p => p.Latitude != 0 || p.Longitude != 0)
+                .Select(p => (Lon: p.Longitude, Lat: p.Latitude))
+                .ToList();
+            if (parkPoints.Count == 0) return new List<FerLookupService.TrailRoute>();
+
+            // A cheap per-trail reject (checked before the precise, per-park
+            // scan below) using the same padded rectangle spanning every
+            // park - still safe as a reject, since a trail whose bounding
+            // box doesn't even reach that rectangle can't be near any
+            // individual park inside it either.
+            double minLon = parkPoints.Min(p => p.Lon) - padDegrees;
+            double maxLon = parkPoints.Max(p => p.Lon) + padDegrees;
+            double minLat = parkPoints.Min(p => p.Lat) - padDegrees;
+            double maxLat = parkPoints.Max(p => p.Lat) + padDegrees;
+
+            return _trails
+                .Where(t => TrailPassesNearAnyPark(t, parkPoints, minLon, minLat, maxLon, maxLat, padDegrees))
+                .ToList();
+        }
+
+        private static bool TrailPassesNearAnyPark(
+            FerLookupService.TrailRoute trail, List<(double Lon, double Lat)> parkPoints,
+            double minLon, double minLat, double maxLon, double maxLat, double padDegrees)
+        {
+            if (trail.MaxLon < minLon || trail.MinLon > maxLon ||
+                trail.MaxLat < minLat || trail.MinLat > maxLat)
+                return false;
+
+            foreach (var line in trail.Lines)
+            {
+                for (int i = 0; i < line.Length; i += 2)
+                {
+                    double lon = line[i], lat = line[i + 1];
+                    if (lon < minLon || lon > maxLon || lat < minLat || lat > maxLat) continue;
+
+                    foreach (var park in parkPoints)
+                    {
+                        if (Math.Abs(lon - park.Lon) <= padDegrees && Math.Abs(lat - park.Lat) <= padDegrees)
+                            return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static MapGeoFeatureDto BuildAreaFeatureDto(FerLookupService.BoundaryFeature boundary)
+        {
+            var dto = new MapGeoFeatureDto { Name = boundary.Name };
+            foreach (var part in boundary.Polys)
+            {
+                var rings = new List<double[][]>();
+                foreach (var flatRing in part)
+                    rings.Add(FlatToPoints(flatRing));
+                dto.Geometry.Add(rings);
+            }
+            return dto;
+        }
+
+        private static MapGeoFeatureDto BuildTrailFeatureDto(FerLookupService.TrailRoute trail)
+        {
+            var dto = new MapGeoFeatureDto { Name = trail.Name };
+            foreach (var flatLine in trail.Lines)
+                dto.Geometry.Add(new List<double[][]> { FlatToPoints(flatLine) });
+            return dto;
+        }
+
+        // BoundaryFeature/TrailRoute store each ring/line as a flat
+        // [lon,lat,lon,lat,...] array (see FerLookupService); the map DTOs
+        // use one [lon,lat] pair per point instead, matching GeoJSON
+        // coordinate shape so the map's JS can treat both the same way.
+        private static double[][] FlatToPoints(double[] flat)
+        {
+            int n = flat.Length / 2;
+            var points = new double[n][];
+            for (int i = 0; i < n; i++)
+                points[i] = new double[] { flat[2 * i], flat[2 * i + 1] };
+            return points;
+        }
+
+        // Writes out a permanent copy of the map buttonShowMap_Click last
+        // opened - the browser was only ever shown a %TEMP% copy, which
+        // CleanUpTempFiles deletes when the program closes.
+        private void buttonSaveMap_Click(object sender, EventArgs e)
+        {
+            if (_lastMapHtml == null)
+            {
+                MessageBox.Show("Show the map first, then you can save a copy of it.");
+                return;
+            }
+            string stateCode = comboBoxState.SelectedValue?.ToString() ?? "Parks";
+            using var dlg = new SaveFileDialog
+            {
+                Filter = "HTML files (*.html)|*.html",
+                FileName = $"POTA_{stateCode}_Map.html"
+            };
+            if (dlg.ShowDialog() != DialogResult.OK) return;
+            try
+            {
+                File.WriteAllText(dlg.FileName, _lastMapHtml, Encoding.UTF8);
+                MessageBox.Show("Map file saved successfully.");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Error saving map: " + ex.Message);
             }
         }
 
@@ -1149,6 +1398,7 @@ namespace PotaActivatorParkActivations
                 buttonExportCsv.Enabled = false;
                 buttonExportExcel.Enabled = false;
                 buttonShowMap.Enabled = false;
+                buttonSaveMap.Enabled = false;
                 SetButtonHighlight(buttonLoadParks, false);
                 SetButtonHighlight(buttonLoadAdif, false);
                 SetButtonHighlight(buttonExportCsv, false);

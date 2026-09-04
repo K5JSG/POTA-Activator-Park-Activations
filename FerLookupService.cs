@@ -46,11 +46,133 @@ namespace PotaActivatorParkActivations
         public class BoundaryFeature
         {
             public string Name { get; set; } = "";
+            // Which source layer this came from (e.g. "PAD-US", "Community",
+            // "EC") - see LayerTitlesByFileName below. Purely for map display
+            // (grouping/toggling); ComputeFers ignores it entirely.
+            public string Layer { get; set; } = "";
             public double MinLon { get; set; }
             public double MinLat { get; set; }
             public double MaxLon { get; set; }
             public double MaxLat { get; set; }
             public List<List<double[]>> Polys { get; set; } = new();
+        }
+
+        // Maps a boundary source file's name to the short display title
+        // potamap.us itself uses for that layer (scraped from its own
+        // LayerData.js, github.com/cwhelchel/potamap.ol) - so a user who
+        // already knows that site's layer names (PAD-US, Community, EC, ...)
+        // sees the same names here. Filenames already embed the state code
+        // (e.g. "PADUS4_0_StateAL.geojson"), so one flat, state-agnostic table
+        // covers every state without collisions - confirmed by cross-checking
+        // every entry in that file for a same-name-different-title conflict.
+        // "PAS-US Fee" (a typo in potamap.us's own data, for MN/MO) is
+        // corrected to "PAD-US Fee" here rather than reproduced.
+        private static readonly Dictionary<string, string> LayerTitlesByFileName =
+            new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["at.geojson"] = "AT",
+            ["BLM_PADUS3_0Combined_StateWY.geojson"] = "BLM",
+            ["butterfield_ovrlnd_nht.geojson"] = "BFO NHT",
+            ["cali_nht.geojson"] = "CALI NHT",
+            ["california_state_parks.geojson"] = "Community",
+            ["cop3.geojson"] = "COP",
+            ["eriecanalway_sim.geojson"] = "EC",
+            ["fl_nst2.geojson"] = "FL NST",
+            ["ice_age_trail2.geojson"] = "ICE_AGE",
+            ["illinois_state_parks.geojson"] = "Community",
+            ["IN_DNR_Properties.geojson"] = "Community",
+            ["lc_nht.geojson"] = "LC NHT",
+            ["los_tejas.geojson"] = "ELCA_LT NHT",
+            ["MI_DNR_Parks_Unit_Boundary.geojson"] = "Community",
+            ["minnesota_state_parks.geojson"] = "Community",
+            ["mnrra.geojson"] = "MNRRA",
+            ["Mormon_Pioneer_NHT.geojson"] = "MP NHT",
+            ["nct_nst.geojson"] = "NCT NST",
+            ["nebraska_state_parks.geojson"] = "Community",
+            ["new_dnr20a.geojson"] = "GA DNR",
+            ["new_PAD1.geojson"] = "PAD-US",
+            ["new_york_state_parks.geojson"] = "Community",
+            ["NMStateParks.geojson"] = "Community",
+            ["old_spanish_nht.geojson"] = "OLSP NHT",
+            ["or_nht.geojson"] = "OR NHT",
+            ["PADUS3_0Combined_StateAZ.geojson"] = "PAD-US",
+            ["PADUS3_0Combined_StateID.geojson"] = "PAD-US",
+            ["PADUS3_0Combined_StateND.geojson"] = "PAD-US",
+            ["PADUS3_0Combined_StateNM.geojson"] = "PAD-US",
+            ["PADUS3_0Combined_StateOK.geojson"] = "PAD-US",
+            ["PADUS3_0Combined_StateVT.geojson"] = "PAD-US",
+            ["PADUS3_0Combined_StateWY.geojson"] = "PAD-US",
+            ["PADUS3_0Designation_StateAR.geojson"] = "PAD-US Des",
+            ["PADUS3_0Designation_StateNV.geojson"] = "PAD-US Des",
+            ["PADUS3_0Designation_StateUT.geojson"] = "PAD-US Des",
+            ["PADUS3_0Designation_StateWI.geojson"] = "PAD-US Des",
+            ["PADUS3_0Fee_StateAK.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateAR.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateCA.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateDC.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateIA.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateIL.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateKS.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateKY.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateMA.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateME.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateMI.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateMO.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateMS.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateNC.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateNE.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateNH.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateNJ.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateNV.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateNY.geojson"] = "PAD-US",
+            ["PADUS3_0Fee_StatePA.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StatePR.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateRI.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateSC.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateSD.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateTN.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateUT.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateVI.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateWI.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Fee_StateWV.geojson"] = "PAD-US Fee",
+            ["PADUS3_0Proclamation_StateWI.geojson"] = "PAD-US Proc",
+            ["PADUS4_0_State_CT.geojson"] = "PAD-US Fee",
+            ["PADUS4_0_State_OR.geojson"] = "PAD-US",
+            ["PADUS4_0_State_WA.geojson"] = "PAD-US",
+            ["PADUS4_0_StateAL.geojson"] = "PAD-US Fee",
+            ["PADUS4_0_StateCO.geojson"] = "PAD-US Fee",
+            ["PADUS4_0_StateDE.geojson"] = "PAD-US Fee",
+            ["PADUS4_0_StateFL.geojson"] = "PAD-US Fee",
+            ["PADUS4_0_StateHI.geojson"] = "PAD-US",
+            ["PADUS4_0_StateIN.geojson"] = "PAD-US",
+            ["PADUS4_0_StateLA.geojson"] = "PAD-US Fee",
+            ["PADUS4_0_StateMD.geojson"] = "PAD-US Fee",
+            ["PADUS4_0_StateMN.geojson"] = "PAD-US Fee",
+            ["PADUS4_0_StateMT.geojson"] = "PAD-US Fee",
+            ["PADUS4_0_StateOH.geojson"] = "PAD-US",
+            ["PADUS4_0_StateVA.geojson"] = "PAD-US Fee",
+            ["PADUS4_0_StateVA_Desig.geojson"] = "PAD-US Des",
+            ["PADUS4_0Fee_StateTX.geojson"] = "PAD-US",
+            ["Pony_Express_NHT.geojson"] = "PE NHT",
+            ["safe.geojson"] = "SAFE NHT",
+            ["tierra_adentro.geojson"] = "ELCA_TA NHT",
+            ["tot.geojson"] = "TOT NHT",
+            ["VA_SP_Boundaries.geojson"] = "Community",
+            ["waro.geojson"] = "WARO NHT",
+        };
+
+        // Falls back to a cleaned-up version of the filename itself for a
+        // one-off state file potamap.us's own table doesn't (yet) list -
+        // e.g. a future new PAD-US revision or extra layer - so a new file
+        // shows up as its own usable layer instead of silently vanishing.
+        private static string GetLayerTitle(string fileName)
+        {
+            if (LayerTitlesByFileName.TryGetValue(fileName, out var title)) return title;
+
+            string stem = fileName.EndsWith(".geojson", StringComparison.OrdinalIgnoreCase)
+                ? fileName.Substring(0, fileName.Length - ".geojson".Length)
+                : fileName;
+            return stem.Replace('_', ' ').Replace('-', ' ').Trim();
         }
 
         // Bumped whenever DownloadSourceIndexAsync's file-selection logic changes
@@ -62,8 +184,11 @@ namespace PotaActivatorParkActivations
         // the change. Confirmed this was a real gap, not just a theoretical one:
         // broadening file discovery to include NY's eriecanalway_sim.geojson had
         // no effect on an already-cached FerBoundaries_NY.cache.json until this
-        // version check was added.
-        private const int CacheSchemaVersion = 2;
+        // version check was added. Bumped to 3 when BoundaryFeature gained
+        // Layer - an on-disk cache from before that has every feature's Layer
+        // default to "", which would show up as a single nameless checkbox on
+        // the map rather than the real per-source grouping.
+        private const int CacheSchemaVersion = 3;
 
         private class BoundaryCache
         {
@@ -259,7 +384,8 @@ namespace PotaActivatorParkActivations
                     {
                         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
                         string json = await http.GetStringAsync(url, cts.Token);
-                        allFeatures.AddRange(ParseGeoJsonFeatures(json));
+                        string fileName = url.Substring(url.LastIndexOf('/') + 1);
+                        allFeatures.AddRange(ParseGeoJsonFeatures(json, GetLayerTitle(fileName)));
                     }
                     catch
                     {
@@ -289,7 +415,7 @@ namespace PotaActivatorParkActivations
             }
         }
 
-        private static List<BoundaryFeature> ParseGeoJsonFeatures(string json)
+        private static List<BoundaryFeature> ParseGeoJsonFeatures(string json, string layerTitle)
         {
             var results = new List<BoundaryFeature>();
             using var doc = JsonDocument.Parse(json);
@@ -342,6 +468,7 @@ namespace PotaActivatorParkActivations
                 results.Add(new BoundaryFeature
                 {
                     Name = name,
+                    Layer = layerTitle,
                     MinLon = minLon,
                     MinLat = minLat,
                     MaxLon = maxLon,

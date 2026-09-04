@@ -25,6 +25,7 @@
             buttonExportCsv = new Button();
             buttonExportExcel = new Button();
             buttonShowMap = new Button();
+            buttonSaveMap = new Button();
             labelWwffDate = new Label();
             progressBar1 = new ProgressBar();
             labelStatus = new Label();
@@ -124,7 +125,18 @@
             buttonShowMap.Text = "Show Map...";
             buttonShowMap.UseVisualStyleBackColor = true;
             buttonShowMap.Click += buttonShowMap_Click;
-            // 
+            //
+            // buttonSaveMap
+            //
+            buttonSaveMap.Enabled = false;
+            buttonSaveMap.Location = new Point(1061, 40);
+            buttonSaveMap.Name = "buttonSaveMap";
+            buttonSaveMap.Size = new Size(150, 25);
+            buttonSaveMap.TabIndex = 2;
+            buttonSaveMap.Text = "Save Map...";
+            buttonSaveMap.UseVisualStyleBackColor = true;
+            buttonSaveMap.Click += buttonSaveMap_Click;
+            //
             // labelWwffDate
             // 
             labelWwffDate.AutoSize = true;
@@ -190,6 +202,7 @@
             Controls.Add(labelStatus);
             Controls.Add(progressBar1);
             Controls.Add(labelWwffDate);
+            Controls.Add(buttonSaveMap);
             Controls.Add(buttonShowMap);
             Controls.Add(buttonExportExcel);
             Controls.Add(buttonExportCsv);
@@ -222,6 +235,7 @@
         private System.Windows.Forms.Button buttonExportCsv;
         private System.Windows.Forms.Button buttonExportExcel;
         private System.Windows.Forms.Button buttonShowMap;
+        private System.Windows.Forms.Button buttonSaveMap;
         private System.Windows.Forms.Label labelWwffDate;
         private System.Windows.Forms.ProgressBar progressBar1;
         private System.Windows.Forms.Label labelStatus;
