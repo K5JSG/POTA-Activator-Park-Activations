@@ -74,6 +74,20 @@ namespace PotaActivatorParkActivations
             return folder;
         }
 
+        // A dedicated, permanent subfolder under %TEMP% (rather than writing
+        // loose files straight into %TEMP% itself) so the whole thing can be
+        // pointed at once as a trusted location in antivirus software (e.g.
+        // Norton 360), instead of the user having to trust all of %TEMP%.
+        // The folder itself is left in place between runs - only the files
+        // this session wrote to it are deleted on close, via
+        // CleanUpTempFiles() below.
+        private static string GetAppTempFolder()
+        {
+            string folder = Path.Combine(Path.GetTempPath(), "POTA Activator Park Activations");
+            Directory.CreateDirectory(folder);
+            return folder;
+        }
+
         // Where the KFF CSV is actually read from: prefers the writable
         // %LocalAppData% copy (which is what auto-update writes to), but falls
         // back to a copy sitting next to the .exe, in case one was placed there
@@ -393,7 +407,7 @@ namespace PotaActivatorParkActivations
                 string fileName = Path.GetFileName(new Uri(bestUrl).LocalPath);
                 if (string.IsNullOrWhiteSpace(fileName)) fileName = "wwff_download.xls";
 
-                string tempPath = Path.Combine(Path.GetTempPath(), fileName);
+                string tempPath = Path.Combine(GetAppTempFolder(), fileName);
                 await File.WriteAllBytesAsync(tempPath, fileBytes);
                 _tempFilesToCleanUp.Add(tempPath);
                 return (tempPath, "OK");
@@ -1073,7 +1087,7 @@ namespace PotaActivatorParkActivations
                 }
 
                 string html = MapService.BuildMapHtml(mapParks, BuildBoundaryLayerDtos());
-                string tempPath = Path.Combine(Path.GetTempPath(), "POTAActivatorParkActivations_Map_" + Guid.NewGuid().ToString("N") + ".html");
+                string tempPath = Path.Combine(GetAppTempFolder(), "POTAActivatorParkActivations_Map_" + Guid.NewGuid().ToString("N") + ".html");
                 File.WriteAllText(tempPath, html, Encoding.UTF8);
                 _tempFilesToCleanUp.Add(tempPath);
                 _lastMapHtml = html;
