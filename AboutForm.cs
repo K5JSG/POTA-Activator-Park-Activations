@@ -10,16 +10,16 @@ namespace PotaActivatorParkActivations
         {
             InitializeComponent();
 
-            labelVersion.Text = $"Version {Application.ProductVersion}";
+            textBoxVersion.Text = $"Version {Application.ProductVersion}";
 
             try
             {
                 DateTime publishedDate = File.GetLastWriteTime(Application.ExecutablePath);
-                labelPublished.Text = $"Published: {publishedDate:MMMM d, yyyy}";
+                textBoxPublished.Text = $"Published: {publishedDate:MMMM d, yyyy}";
             }
             catch
             {
-                labelPublished.Text = "Published: (unknown)";
+                textBoxPublished.Text = "Published: (unknown)";
             }
 
             textBoxLicense.Text =

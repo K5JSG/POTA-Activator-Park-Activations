@@ -30,9 +30,18 @@ namespace PotaActivatorParkActivations
         public string Kff { get; set; } = "";
 
         // True = you have activated this park yourself (green pin).
-        // False = you have not activated it yet (yellow pin).
+        // False = you have not activated it yet (yellow pin, or orange if
+        // BoatAccessOnly - see that field).
         [JsonPropertyName("completed")]
         public bool Completed { get; set; }
+
+        // User-flagged (grid checkbox, not derived from any data source) as
+        // only reachable by boat. Shown as an orange pin, but only while not
+        // yet completed - completed status (green) still wins once you've
+        // actually activated it, same priority order as the grid's row
+        // coloring.
+        [JsonPropertyName("boatAccessOnly")]
+        public bool BoatAccessOnly { get; set; }
 
         [JsonPropertyName("communityCount")]
         public int CommunityCount { get; set; }
@@ -132,6 +141,7 @@ namespace PotaActivatorParkActivations
   .pota-popup a { color: #1a5fb4; text-decoration: none; font-weight: bold; }
   .pota-popup a:hover { text-decoration: underline; }
   .pota-popup .my-line { margin-top: 6px; color: #2e8b22; font-weight: bold; }
+  .pota-popup .boat-line { margin-top: 6px; color: #d45500; font-weight: bold; }
   .boundary-popup-layer { margin-top: 2px; font-size: 11px; opacity: 0.7; }
   .leaflet-control-layers { font-size: 13px; }
   .leaflet-control-layers-overlays { max-height: 55vh; overflow-y: auto; }
@@ -160,6 +170,7 @@ namespace PotaActivatorParkActivations
     .legend-swatch { border-color: #999; }
     .pota-popup a { color: #6ab0f3; }
     .pota-popup .my-line { color: #6fdc6f; }
+    .pota-popup .boat-line { color: #ff9a4d; }
     .leaflet-control-layers {
       background: #2d2d30; color: #e8e8e8;
       box-shadow: 0 1px 5px rgba(0,0,0,0.6);
@@ -173,7 +184,9 @@ namespace PotaActivatorParkActivations
 <div id=""map""></div>
 <div class=""legend"">
   <div><span class=""legend-swatch"" style=""background:#FFD500;""></span>Not yet activated by me</div>
+  <div><span class=""legend-swatch"" style=""background:#FF6700;""></span>Boat access only, not yet activated</div>
   <div><span class=""legend-swatch"" style=""background:#2E8B22;""></span>Activated by me</div>
+  <div><span class=""legend-swatch"" style=""background:#1a73e8;""></span>Your location</div>
 </div>
 
 <script src=""https://unpkg.com/leaflet@1.9.4/dist/leaflet.js""></script>
@@ -210,6 +223,7 @@ function makePinIcon(color, showCheck) {
 }
 
 var yellowIcon = makePinIcon('#FFD500', false);
+var orangeIcon = makePinIcon('#FF6700', false);
 var greenIcon = makePinIcon('#2E8B22', true);
 
 function buildPopupHtml(p) {
@@ -228,6 +242,10 @@ function buildPopupHtml(p) {
 
   if (p.kff) {
     html += '<div>KFF: ' + escapeHtml(p.kff) + '</div>';
+  }
+
+  if (p.boatAccessOnly) {
+    html += '<div class=""boat-line"">Boat access only</div>';
   }
 
   if (p.communityCount > 0) {
@@ -448,9 +466,21 @@ function addBoundaryLayers(map) {
 
 var map = L.map('map');
 
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+var streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
   attribution: '&copy; <a href=""https://www.openstreetmap.org/copyright"">OpenStreetMap</a> contributors'
+}).addTo(map);
+
+// Esri's World Imagery - free, no API key/account needed, same as the
+// OpenStreetMap tiles above.
+var satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 19,
+  attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
+});
+
+L.control.layers({ 'Street': streetLayer, 'Satellite': satelliteLayer }, null, {
+  position: 'topleft',
+  collapsed: false
 }).addTo(map);
 
 addBoundaryLayers(map);
@@ -460,7 +490,7 @@ parkData.forEach(function (p) {
   // (0, 0) is what an ungeocoded park looks like here - it's out in the Gulf
   // of Guinea, nowhere near a real US park, so this only filters those out.
   if (!p.lat && !p.lon) return;
-  var icon = p.completed ? greenIcon : yellowIcon;
+  var icon = p.completed ? greenIcon : (p.boatAccessOnly ? orangeIcon : yellowIcon);
   var marker = L.marker([p.lat, p.lon], { icon: icon });
   marker.bindPopup(buildPopupHtml(p));
   marker.addTo(map);
@@ -472,6 +502,50 @@ if (bounds.length > 0) {
 } else {
   map.setView([39.8, -98.6], 4); // fallback: center of the continental US
 }
+
+// Live ""you are here"" marker from the browser's Geolocation API. Purely
+// best-effort - if there's no location hardware, the browser/OS location
+// permission is denied, or this is opened in a context that doesn't allow
+// it, locationerror just fires and the map works exactly as it did before,
+// with no marker.
+var youMarker = null;
+var youAccuracyCircle = null;
+var youLocatedOnce = false;
+
+function onLocationFound(e) {
+  if (!youMarker) {
+    youMarker = L.circleMarker(e.latlng, {
+      radius: 8, weight: 3, color: '#ffffff', opacity: 1,
+      fillColor: '#1a73e8', fillOpacity: 1
+    }).addTo(map).bindPopup('Your location');
+    youAccuracyCircle = L.circle(e.latlng, {
+      radius: e.accuracy, weight: 1, color: '#1a73e8', fillColor: '#1a73e8', fillOpacity: 0.1
+    }).addTo(map);
+  } else {
+    youMarker.setLatLng(e.latlng);
+    youAccuracyCircle.setLatLng(e.latlng).setRadius(e.accuracy);
+  }
+
+  // Only nudge the view on the very first fix, and only if it's not already
+  // visible - e.g. the parks loaded are for a state you're not currently
+  // standing in. After that, leave the view alone so a later GPS update
+  // (this keeps watching) never yanks the map out from under you while
+  // you're panning or zooming it.
+  if (!youLocatedOnce) {
+    youLocatedOnce = true;
+    if (!map.getBounds().contains(e.latlng)) {
+      map.fitBounds(map.getBounds().extend(e.latlng), { padding: [40, 40] });
+    }
+  }
+}
+
+function onLocationError() {
+  // Nothing to show, and not worth interrupting the user about.
+}
+
+map.on('locationfound', onLocationFound);
+map.on('locationerror', onLocationError);
+map.locate({ watch: true, setView: false, enableHighAccuracy: true, maximumAge: 10000 });
 </script>
 </body>
 </html>";

@@ -51,6 +51,10 @@ namespace PotaActivatorParkActivations
         private readonly ToolTip _gridToolTip = new ToolTip();
         private string? _gridTooltipKey;
 
+        // Right-click-to-copy menu for a single grid cell - see
+        // DataGridView1_CellMouseDown/GridCopyMenuItem_Click.
+        private readonly ContextMenuStrip _gridCopyMenu = new ContextMenuStrip();
+
         // Reference -> list of dates you activated that park, built from the ADIF file.
         private Dictionary<string, List<DateTime>> _myActivations =
             new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
@@ -147,6 +151,40 @@ namespace PotaActivatorParkActivations
             }
         }
 
+        // Boat Access Only is auto-detected from POTA's own accessMethods tag
+        // for the park (see PotaService.FetchBoatAccessOnlyAsync) and shown
+        // read-only in the grid - there's no checkbox to click. A correction
+        // (a park POTA hasn't tagged, or has tagged differently than reality)
+        // is made by hand-editing this CSV file directly (Reference,true or
+        // Reference,false, one per line under a header row), the same way
+        // KffCrossReference.csv is - whatever's in here takes precedence over
+        // the auto-detected value on every future load.
+        private const string BoatAccessOnlyFileName = "BoatAccessOnlyParks.csv";
+        private readonly Dictionary<string, bool> _boatAccessOnlyOverrides =
+            new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+        private void LoadBoatAccessOnlyOverrides()
+        {
+            _boatAccessOnlyOverrides.Clear();
+            try
+            {
+                string path = Path.Combine(GetWritableAppDataFolder(), BoatAccessOnlyFileName);
+                if (!File.Exists(path)) return;
+
+                foreach (string line in File.ReadAllLines(path).Skip(1)) // skip header
+                {
+                    string[] parts = line.Split(',');
+                    if (parts.Length == 2 && bool.TryParse(parts[1].Trim(), out bool value))
+                        _boatAccessOnlyOverrides[parts[0].Trim()] = value;
+                }
+            }
+            catch
+            {
+                // Fails safe: worst case, previous manual corrections just
+                // don't apply until the user re-sets them.
+            }
+        }
+
         // How often to check for updates to the WWFF/KFF data and the POTA park
         // list. Both barely change day to day, so there's no reason to hit the
         // network every single time - once a week keeps things current without
@@ -218,12 +256,30 @@ namespace PotaActivatorParkActivations
             dataGridView1.Columns.Add(new DataGridViewTextBoxColumn { Name = "colKff", HeaderText = "KFF Ref", DataPropertyName = "Kff", Width = 90, SortMode = DataGridViewColumnSortMode.Automatic });
             dataGridView1.Columns.Add(new DataGridViewTextBoxColumn { Name = "colState", HeaderText = "State", DataPropertyName = "State", Width = 60, SortMode = DataGridViewColumnSortMode.Automatic, Visible = false });
             dataGridView1.Columns.Add(new DataGridViewCheckBoxColumn { Name = "colCompleted", HeaderText = "Completed", DataPropertyName = "Completed", Width = 80, SortMode = DataGridViewColumnSortMode.Automatic });
+            // Display-only, like every other column here (auto-detected from
+            // POTA's own data - see PotaService.FetchBoatAccessOnlyAsync) - a
+            // correction is made by hand-editing BoatAccessOnlyParks.csv
+            // directly, the same way KffCrossReference.csv is, not by
+            // clicking a checkbox in the grid.
+            dataGridView1.Columns.Add(new DataGridViewCheckBoxColumn
+            {
+                Name = "colBoatAccessOnly",
+                HeaderText = "Boat Access Only",
+                DataPropertyName = "BoatAccessOnly",
+                Width = 110,
+                SortMode = DataGridViewColumnSortMode.Automatic
+            });
 
             dataGridView1.CellFormatting += DataGridView1_CellFormatting;
             dataGridView1.CellContentClick += DataGridView1_CellContentClick;
             dataGridView1.CellMouseClick += DataGridView1_CellMouseClick;
+            dataGridView1.CellMouseDown += DataGridView1_CellMouseDown;
+            dataGridView1.CellMouseUp += DataGridView1_CellMouseUp;
             dataGridView1.CellMouseMove += DataGridView1_CellMouseMove;
             dataGridView1.CellMouseLeave += DataGridView1_CellMouseLeave;
+            dataGridView1.Sorted += DataGridView1_Sorted;
+
+            _gridCopyMenu.Items.Add("Copy", null, GridCopyMenuItem_Click);
             // DataGridView's own built-in per-cell tooltip mechanism (unused
             // otherwise - nothing here sets a cell's ToolTipText) would compete
             // with the manual _fersToolTip shown above for the same control.
@@ -237,7 +293,7 @@ namespace PotaActivatorParkActivations
 
             comboBoxState.SelectedIndexChanged += ComboBoxState_SelectedIndexChanged;
             UpdateButtonStates();
-            UpdateWwffDateLabel(WwffUpdateService.LoadInfoFile(GetWritableAppDataFolder()));
+            UpdateWwffDateText(WwffUpdateService.LoadInfoFile(GetWritableAppDataFolder()));
         }
 
         // DataGridView's column/row headers don't automatically follow the
@@ -274,13 +330,29 @@ namespace PotaActivatorParkActivations
 
             if (dataGridView1.Columns["colRef"] is DataGridViewLinkColumn refColumn)
             {
-                refColumn.LinkColor = Color.White;
-                refColumn.VisitedLinkColor = Color.White;
-                refColumn.ActiveLinkColor = Color.White;
+                Color baseLinkColor = NonCompletedLinkColor(selected: false);
+                refColumn.LinkColor = baseLinkColor;
+                refColumn.VisitedLinkColor = baseLinkColor;
+                refColumn.ActiveLinkColor = baseLinkColor;
             }
 
             dataGridView1.Invalidate();
         }
+
+        // SystemColors.Window is White in light mode and a near-black gray
+        // under SystemColorMode.System's dark mode - checking its brightness
+        // is a simple, reliable way to tell which one is currently in effect
+        // without a dedicated "is dark mode" API.
+        private static bool IsDarkMode => SystemColors.Window.GetBrightness() < 0.5f;
+
+        // The Reference column link color for an ordinary (not-yet-completed)
+        // row - white whenever selected (its highlight is bright enough in
+        // both themes that white stays readable) or in dark mode (where the
+        // unselected background is dark), blue only for light mode's
+        // unselected case (white would be invisible against that white
+        // background - see the ApplyDataGridViewTheme comment above).
+        private static Color NonCompletedLinkColor(bool selected) =>
+            (selected || IsDarkMode) ? Color.White : SystemColors.HotTrack;
 
         // SystemColors values update live the moment Windows' theme changes,
         // but a color already assigned to a control doesn't repaint on its own -
@@ -324,9 +396,9 @@ namespace PotaActivatorParkActivations
             }
         }
 
-        private void UpdateWwffDateLabel(DateTime? date)
+        private void UpdateWwffDateText(DateTime? date)
         {
-            labelWwffDate.Text = date.HasValue
+            textBoxWwffDate.Text = date.HasValue
                 ? $"WWFF data as of: {date.Value:MMM d, yyyy}"
                 : "WWFF data: not loaded";
         }
@@ -455,7 +527,7 @@ namespace PotaActivatorParkActivations
                     // again immediately instead of waiting out the rest of
                     // DataRefreshInterval.
                     WwffUpdateService.SaveLastCheckedTime(GetWritableAppDataFolder(), DateTime.UtcNow);
-                    UpdateWwffDateLabel(result.SourceDate);
+                    UpdateWwffDateText(result.SourceDate);
                 }
             }
             catch
@@ -576,19 +648,42 @@ namespace PotaActivatorParkActivations
                     linkCell.VisitedLinkColor = e.CellStyle.ForeColor;
                 }
             }
-            else if (dataGridView1.Columns[e.ColumnIndex].Name == "colRef" &&
-                dataGridView1.Rows[e.RowIndex].Cells[e.ColumnIndex] is DataGridViewLinkCell refLinkCell)
+            else
             {
-                // DataGridViewLinkCell always paints in LinkColor, even when the
-                // row is selected - it doesn't switch to SelectionForeColor the
-                // way normal cells do. So the selected/unselected swap has to be
-                // done by hand here rather than relying on cell style colors.
-                Color linkColor = dataGridView1.Rows[e.RowIndex].Selected ? Color.Black : Color.White;
-                refLinkCell.LinkColor = linkColor;
-                refLinkCell.ActiveLinkColor = linkColor;
-                refLinkCell.VisitedLinkColor = linkColor;
+                // Standard caution/safety orange - a user-flagged heads-up
+                // ("you'll need a boat for this one"), independent of and
+                // lower-priority than the completed styling above, which
+                // takes precedence once you've actually activated the park.
+                if (park.BoatAccessOnly)
+                {
+                    e.CellStyle.BackColor = CautionOrange;
+                    e.CellStyle.SelectionBackColor = CautionOrangeSelected;
+                    e.CellStyle.ForeColor = Color.Black;
+                    e.CellStyle.SelectionForeColor = Color.Black;
+                }
+
+                if (dataGridView1.Columns[e.ColumnIndex].Name == "colRef" &&
+                    dataGridView1.Rows[e.RowIndex].Cells[e.ColumnIndex] is DataGridViewLinkCell refLinkCell)
+                {
+                    // DataGridViewLinkCell always paints in LinkColor, even when
+                    // selected - it doesn't switch to SelectionForeColor the way
+                    // normal cells do. So the selected/unselected swap has to be
+                    // done by hand here rather than relying on cell style colors.
+                    // Checked on the cell itself, not the row - this grid selects
+                    // by individual cell (SelectionMode = CellSelect), so a
+                    // selected Reference cell doesn't make Row.Selected true.
+                    Color linkColor = park.BoatAccessOnly
+                        ? e.CellStyle.ForeColor
+                        : NonCompletedLinkColor(refLinkCell.Selected);
+                    refLinkCell.LinkColor = linkColor;
+                    refLinkCell.ActiveLinkColor = linkColor;
+                    refLinkCell.VisitedLinkColor = linkColor;
+                }
             }
         }
+
+        private static readonly Color CautionOrange = Color.FromArgb(255, 103, 0);
+        private static readonly Color CautionOrangeSelected = Color.FromArgb(196, 79, 0);
 
         // Opens the park's page on the POTA website when its Reference link is
         // clicked, e.g. https://pota.app/#/park/US-2001 - the same URL pattern
@@ -686,6 +781,43 @@ namespace PotaActivatorParkActivations
                 textBoxSearch.Text = "";
                 TryJumpToParkInGrid(reference);
             }
+        }
+
+        // Right-clicking a cell selects it, so it's clear which cell "Copy"
+        // is about to act on.
+        private void DataGridView1_CellMouseDown(object? sender, DataGridViewCellMouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Right && e.RowIndex >= 0 && e.ColumnIndex >= 0)
+                dataGridView1.CurrentCell = dataGridView1.Rows[e.RowIndex].Cells[e.ColumnIndex];
+        }
+
+        // The menu itself is shown here, on mouse-up rather than mouse-down -
+        // showing it on CellMouseDown let the right button's own still-pending
+        // release land on the now-open menu a moment later, which dismissed
+        // it immediately (confirmed: Visible was briefly true, then false by
+        // the next real interaction). Also: assigning
+        // DataGridView.ContextMenuStrip alone did not reliably auto-show it
+        // here (same class of issue as plain TextBox elsewhere in this app),
+        // so it's shown by hand instead.
+        private void DataGridView1_CellMouseUp(object? sender, DataGridViewCellMouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Right || e.RowIndex < 0 || e.ColumnIndex < 0) return;
+
+            var cellRect = dataGridView1.GetCellDisplayRectangle(e.ColumnIndex, e.RowIndex, cutOverflow: false);
+            var gridPoint = new Point(cellRect.X + e.Location.X, cellRect.Y + e.Location.Y);
+            _gridCopyMenu.Show(dataGridView1.PointToScreen(gridPoint));
+        }
+
+        // Copies FormattedValue rather than Value, so it matches what's
+        // actually displayed (e.g. Elevation's "N0" formatting) rather than
+        // the raw bound value.
+        private void GridCopyMenuItem_Click(object? sender, EventArgs e)
+        {
+            string text = dataGridView1.CurrentCell?.FormattedValue?.ToString() ?? "";
+            if (text.Length == 0) return;
+
+            Clipboard.SetText(text);
+            textBoxStatus.Text = $"Copied \"{text}\" to clipboard.";
         }
 
         // A KFF cell is almost always just one bare reference ("KFF-2097"),
@@ -787,18 +919,19 @@ namespace PotaActivatorParkActivations
             try
             {
                 progressBar1.Value = 0;
-                labelStatus.Text = "Checking for KFF-POTA cross reference updates...";
+                textBoxStatus.Text = "Checking for KFF-POTA cross reference updates...";
                 await EnsureWwffDataAsync();
                 LoadKffLookup();
                 LoadKffNamesLookup();
                 LoadElevationLookup();
+                LoadBoatAccessOnlyOverrides();
 
                 _myActivations = new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
                 _allRawParks = await PotaService.GetAllParksAsync(
                     _http, GetWritableAppDataFolder(), DataRefreshInterval,
-                    msg => labelStatus.Text = msg);
+                    msg => textBoxStatus.Text = msg);
                 var candidates = PotaService.FilterByState(_allRawParks, stateCode);
-                labelStatus.Text = $"Looking up counties for {candidates.Count} parks...";
+                textBoxStatus.Text = $"Looking up counties for {candidates.Count} parks...";
                 var progress = new Progress<int>(pct => progressBar1.Value = Math.Min(pct, 100));
                 await PotaService.GeocodeParksAsync(candidates, stateCode, progress);
                 _parks = candidates.Where(p => !p.Exclude).OrderBy(p => p.Name).ToList();
@@ -812,10 +945,22 @@ namespace PotaActivatorParkActivations
                         park.Kff = PotaService.SelectKffForState(kff, stateCode);
                 }
 
-                labelStatus.Text = "Checking park boundaries for Xfer's...";
+                textBoxStatus.Text = $"Checking access methods for {_parks.Count} parks...";
+                var boatAccessResults = await PotaService.FetchBoatAccessOnlyAsync(
+                    _http, _parks, GetWritableAppDataFolder(), progress);
+                foreach (var park in _parks)
+                {
+                    // A manual correction (see BoatAccessOnlyFileName above)
+                    // always wins over what POTA's own data says.
+                    park.BoatAccessOnly = _boatAccessOnlyOverrides.TryGetValue(park.Reference, out bool manual)
+                        ? manual
+                        : boatAccessResults.GetValueOrDefault(park.Reference, false);
+                }
+
+                textBoxStatus.Text = "Checking park boundaries for Xfer's...";
                 var boundaries = await FerLookupService.EnsureBoundariesAsync(
                     _http, GetWritableAppDataFolder(), stateCode, BoundaryRefreshInterval,
-                    msg => labelStatus.Text = msg);
+                    msg => textBoxStatus.Text = msg);
                 _boundaries = boundaries;
                 // ComputeFers is given only this state's own parks and only this
                 // state's own boundary polygons, so every reference it returns is
@@ -828,10 +973,10 @@ namespace PotaActivatorParkActivations
                         park.Fers = string.Join(", ", others);
                 }
 
-                labelStatus.Text = "Checking national trail routes for Xfer's...";
+                textBoxStatus.Text = "Checking national trail routes for Xfer's...";
                 var trails = await FerLookupService.EnsureTrailRoutesAsync(
                     _http, GetWritableAppDataFolder(), TrailRefreshInterval,
-                    msg => labelStatus.Text = msg);
+                    msg => textBoxStatus.Text = msg);
                 _trails = trails;
                 // candidates (not _parks) is the owner search list here - it's
                 // the pre-exclusion set, which still includes a multi-state
@@ -905,12 +1050,12 @@ namespace PotaActivatorParkActivations
                 string trailNote = newTrailRows.Count > 0
                     ? $" Also found {newTrailRows.Count} national trail(s) whose route crosses this state (shown with their own state) - verify you're within 100 ft of the trail before claiming."
                     : "";
-                labelStatus.Text = $"Loaded {_parks.Count} parks for {stateCode}.{ferNote}{trailNote}";
+                textBoxStatus.Text = $"Loaded {_parks.Count} parks for {stateCode}.{ferNote}{trailNote}";
             }
             catch (Exception ex)
             {
                 MessageBox.Show("Error loading parks: " + ex.Message);
-                labelStatus.Text = "Error loading parks.";
+                textBoxStatus.Text = "Error loading parks.";
             }
             finally
             {
@@ -984,7 +1129,7 @@ namespace PotaActivatorParkActivations
                 }
                 if (extraParks.Count > 0)
                 {
-                    labelStatus.Text = $"Looking up {extraParks.Count} out-of-state park(s)...";
+                    textBoxStatus.Text = $"Looking up {extraParks.Count} out-of-state park(s)...";
                     progressBar1.Value = 0;
                     var progress = new Progress<int>(pct => progressBar1.Value = Math.Min(pct, 100));
                     await PotaService.GeocodeExtraParksAsync(extraParks, progress);
@@ -1005,21 +1150,21 @@ namespace PotaActivatorParkActivations
                 int unresolvedCount = outOfStateRefs.Count - extraParks.Count;
                 if (extraParks.Count > 0 && unresolvedCount == 0)
                 {
-                    labelStatus.Text = $"Marked {matchedInState} in-state park(s) complete, plus {extraParks.Count} out-of-state park(s) found.";
+                    textBoxStatus.Text = $"Marked {matchedInState} in-state park(s) complete, plus {extraParks.Count} out-of-state park(s) found.";
                 }
                 else if (extraParks.Count > 0 && unresolvedCount > 0)
                 {
-                    labelStatus.Text = $"Marked {matchedInState} in-state park(s) complete, plus {extraParks.Count} out-of-state park(s) found. " +
+                    textBoxStatus.Text = $"Marked {matchedInState} in-state park(s) complete, plus {extraParks.Count} out-of-state park(s) found. " +
                         $"({unresolvedCount} other reference(s) in the ADIF didn't match any known park.)";
                 }
                 else if (unresolvedCount > 0)
                 {
-                    labelStatus.Text = $"Marked {matchedInState} in-state park(s) complete. Found {unresolvedCount} out-of-state reference(s) " +
+                    textBoxStatus.Text = $"Marked {matchedInState} in-state park(s) complete. Found {unresolvedCount} out-of-state reference(s) " +
                         "in the ADIF, but none matched a park in the POTA master list.";
                 }
                 else
                 {
-                    labelStatus.Text = $"Marked {matchedInState} of {_parks.Count} parks as completed from ADIF.";
+                    textBoxStatus.Text = $"Marked {matchedInState} of {_parks.Count} parks as completed from ADIF.";
                 }
             }
             catch (Exception ex)
@@ -1048,7 +1193,7 @@ namespace PotaActivatorParkActivations
             SetBusy(true);
             try
             {
-                labelStatus.Text = "Looking up activation history from POTA (this can take a little while)...";
+                textBoxStatus.Text = "Looking up activation history from POTA (this can take a little while)...";
                 progressBar1.Value = 0;
                 var progress = new Progress<int>(pct => progressBar1.Value = Math.Min(pct, 100));
 
@@ -1066,7 +1211,8 @@ namespace PotaActivatorParkActivations
                         County = park.County,
                         ElevationFeet = park.ElevationFeet,
                         Kff = park.Kff,
-                        Completed = park.Completed
+                        Completed = park.Completed,
+                        BoatAccessOnly = park.BoatAccessOnly
                     };
 
                     if (activationInfo.TryGetValue(park.Reference, out var info))
@@ -1099,12 +1245,12 @@ namespace PotaActivatorParkActivations
                 };
                 Process.Start(psi);
 
-                labelStatus.Text = "Map opened in your default browser.";
+                textBoxStatus.Text = "Map opened in your default browser.";
             }
             catch (Exception ex)
             {
                 MessageBox.Show("Error building the map: " + ex.Message);
-                labelStatus.Text = "Error building the map.";
+                textBoxStatus.Text = "Error building the map.";
             }
             finally
             {
@@ -1397,6 +1543,12 @@ namespace PotaActivatorParkActivations
                 }
                 dataGridView1.DataSource = new SortableBindingList<ParkRecord>(filtered);
             }
+
+            // Every SortableBindingList above starts out unsorted, so any
+            // sort arrow left over from before this (re)bind would be lying
+            // about the grid's actual (now unsorted) order.
+            foreach (DataGridViewColumn column in dataGridView1.Columns)
+                column.HeaderText = StripSortArrow(column.HeaderText);
         }
 
         private void SetBusy(bool busy)
@@ -1429,5 +1581,34 @@ namespace PotaActivatorParkActivations
         {
             BindGrid();
         }
+
+        // Excel-style column-header sort arrow. SortableBindingList is what
+        // makes header-click sorting possible at all (see that class) - this
+        // just reflects the result of it back onto the header that was
+        // clicked. Fires after every sort, so previous columns' arrows are
+        // always cleared first - only the current sort column ever shows one.
+        //
+        // This is drawn as part of the header text itself, rather than via
+        // DataGridView's built-in HeaderCell.SortGlyphDirection - that glyph
+        // is only painted by the OS-themed header renderer, which this grid
+        // turns off (EnableHeadersVisualStyles = false, in
+        // ApplyDataGridViewTheme) so header colors can follow the app's own
+        // dark/light mode instead. With themed rendering off, that glyph
+        // never draws at all, so it's spelled out in the text instead - the
+        // one rendering path we know already works for every header.
+        private void DataGridView1_Sorted(object? sender, EventArgs e)
+        {
+            foreach (DataGridViewColumn column in dataGridView1.Columns)
+                column.HeaderText = StripSortArrow(column.HeaderText);
+
+            if (dataGridView1.SortedColumn != null)
+            {
+                string arrow = dataGridView1.SortOrder == SortOrder.Descending ? " ▼" : " ▲";
+                dataGridView1.SortedColumn.HeaderText = StripSortArrow(dataGridView1.SortedColumn.HeaderText) + arrow;
+            }
+        }
+
+        private static string StripSortArrow(string headerText) =>
+            headerText.TrimEnd(' ', '▲', '▼');
     }
 }
