@@ -5,6 +5,8 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -188,6 +190,17 @@ namespace PotaActivatorParkActivations
         // Layer - an on-disk cache from before that has every feature's Layer
         // default to "", which would show up as a single nameless checkbox on
         // the map rather than the real per-source grouping.
+        //
+        // Also gates XferAreaResultCache/XferTrailResultCache/
+        // XferSotaResultCache - the persisted match results, see
+        // ComputeFersCachedAsync/ComputeTrailFersCachedAsync/
+        // ComputeSotaMatchesCachedAsync below - so a change to how those
+        // match (or to BoundaryFingerprint/TrailFingerprint's shape) gets the
+        // same "takes effect on the very next load" guarantee, at the cost of
+        // also invalidating the unrelated boundary/trail/source-index caches
+        // above when only a matcher changed. Accepted trade-off: one shared
+        // version number is simpler than six independent ones, and none of
+        // these caches invalidate often regardless.
         private const int CacheSchemaVersion = 3;
 
         private class BoundaryCache
@@ -540,11 +553,15 @@ namespace PotaActivatorParkActivations
         {
             string cachePath = Path.Combine(cacheFolder, TrailRoutesFileName);
 
+            // Kept (not just used for the freshness check below) so the merge
+            // logic further down can reuse it instead of re-reading and
+            // re-deserializing the same, potentially multi-MB file a second time.
+            TrailRouteCache? stale = null;
             if (File.Exists(cachePath))
             {
-                var cached = await TryReadValidTrailCacheAsync(cachePath);
-                if (cached != null && DateTime.UtcNow - cached.CachedUtc < maxAge)
-                    return cached.Routes;
+                stale = await TryReadValidTrailCacheAsync(cachePath);
+                if (stale != null && DateTime.UtcNow - stale.CachedUtc < maxAge)
+                    return stale.Routes;
             }
 
             statusCallback?.Invoke("Downloading national trail route data (one-time)...");
@@ -581,17 +598,33 @@ namespace PotaActivatorParkActivations
 
             if (routes.Count == 0)
             {
-                var stale = await TryReadValidTrailCacheAsync(cachePath);
+                // Fully offline (every trail file and the Empire State Trail zip
+                // failed) - fall back to whatever's already cached, and leave the
+                // cache file's timestamp untouched so the very next run tries
+                // again instead of waiting out the rest of the 30-day window.
                 return stale?.Routes ?? new List<TrailRoute>();
             }
 
+            // Merge this round's successfully-downloaded trails over the stale
+            // cache by name, rather than replacing it outright - a transient
+            // failure on one trail's file (see the per-file catch above)
+            // shouldn't silently drop that trail from the cache when the other
+            // ~15 succeeded.
+            var merged = new Dictionary<string, TrailRoute>(StringComparer.OrdinalIgnoreCase);
+            if (stale != null)
+            {
+                foreach (var route in stale.Routes) merged[route.Name] = route;
+            }
+            foreach (var route in routes) merged[route.Name] = route;
+
+            var finalRoutes = merged.Values.ToList();
             await TryWriteJsonAsync(cachePath, new TrailRouteCache
             {
                 SchemaVersion = CacheSchemaVersion,
                 CachedUtc = DateTime.UtcNow,
-                Routes = routes
+                Routes = finalRoutes
             });
-            return routes;
+            return finalRoutes;
         }
 
         private static List<TrailRoute> ParseGeoJsonTrailFeatures(string json)
@@ -942,6 +975,192 @@ namespace PotaActivatorParkActivations
             return result;
         }
 
+        // ---- Persisted Xfer results - like BoatAccessOnly, computed once and kept ---------
+
+        // ComputeFers/ComputeTrailFers are pure functions of their inputs, but
+        // re-running them on every state load is wasted work once the
+        // boundary/trail data they're matching against has stabilized (it only
+        // refreshes every 30 days - see EnsureBoundariesAsync/
+        // EnsureTrailRoutesAsync). These cached wrappers persist the computed
+        // result to disk, keyed by a content hash of everything the computation
+        // actually depends on, and only redo the real work when that hash
+        // changes - i.e. when a park's location/name, the matched boundary
+        // data, or a trail's route has genuinely changed since last time.
+        // Mirrors PotaService.FetchBoatAccessOnlyAsync's "permanent until the
+        // real-world thing changes" caching, one level up from there.
+        private static string ComputeContentHash(object payload)
+        {
+            string json = JsonSerializer.Serialize(payload);
+            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
+        }
+
+        // A single boundary/trail's real coordinate data can run to thousands of
+        // points - including it verbatim in a hash that gets recomputed on
+        // every state load (a cache hit still has to hash its way to that
+        // conclusion) would mean serializing the state's entire PAD-US polygon
+        // set just to answer "did anything change". Name + layer + bounding box
+        // + total point count is a strong enough fingerprint of "did this
+        // feature's shape actually change" for that purpose - same trade-off
+        // this file already makes elsewhere (e.g. IsPointNearTrail's bounding-
+        // box pre-check, FindOwnedBoundaries' fuzzy name matching) in favor of
+        // a cheap, practically-exact check over an expensive, perfectly-exact
+        // one. A coincidental collision (same name/layer/bbox/point-count but
+        // different internal shape) would only cause a missed recompute, never
+        // a wrong Xfer result being kept past its actual source data.
+        // Concrete record types, not anonymous types - OrderBy/ThenBy on the
+        // fingerprint sequence (see the two call sites below) need to name
+        // .Name/.Layer, which an object-typed anonymous-type return erases.
+        private sealed record BoundaryFingerprintKey(
+            string Name, string Layer, double MinLon, double MinLat, double MaxLon, double MaxLat, int PointCount);
+
+        private static BoundaryFingerprintKey BoundaryFingerprint(BoundaryFeature f) => new(
+            f.Name, f.Layer, f.MinLon, f.MinLat, f.MaxLon, f.MaxLat,
+            f.Polys.Sum(part => part.Sum(ring => ring.Length)));
+
+        private sealed record TrailFingerprintKey(
+            string Name, double MinLon, double MinLat, double MaxLon, double MaxLat, int PointCount);
+
+        private static TrailFingerprintKey TrailFingerprint(TrailRoute t) => new(
+            t.Name, t.MinLon, t.MinLat, t.MaxLon, t.MaxLat,
+            t.Lines.Sum(line => line.Length));
+
+        private class XferAreaResultCache
+        {
+            public int SchemaVersion { get; set; }
+            public string InputHash { get; set; } = "";
+            public Dictionary<string, List<string>> Fers { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+            public int MatchedBoundaryCount { get; set; }
+        }
+
+        public static async Task<FerResult> ComputeFersCachedAsync(
+            List<ParkRecord> parks, List<BoundaryFeature> boundaries, string cacheFolder, string stateCode)
+        {
+            string cachePath = Path.Combine(cacheFolder, $"XferAreaResults_{stateCode.ToUpperInvariant()}.cache.json");
+            string inputHash = ComputeContentHash(new
+            {
+                Parks = parks.Select(p => new { p.Reference, p.Name, p.Latitude, p.Longitude })
+                              .OrderBy(p => p.Reference, StringComparer.OrdinalIgnoreCase).ToList(),
+                // Ordered so a boundary refresh that returns the same features in
+                // a different order (e.g. the source file's own feature order
+                // shifted) doesn't look like a change and trigger a needless
+                // recompute.
+                Boundaries = boundaries.Select(BoundaryFingerprint)
+                                        .OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
+                                        .ThenBy(f => f.Layer, StringComparer.OrdinalIgnoreCase)
+                                        .ToList()
+            });
+
+            var cached = await TryReadJsonAsync<XferAreaResultCache>(cachePath);
+            if (cached != null && cached.SchemaVersion == CacheSchemaVersion && cached.InputHash == inputHash)
+            {
+                var cachedResult = new FerResult { MatchedBoundaryCount = cached.MatchedBoundaryCount };
+                foreach (var kvp in cached.Fers) cachedResult.Fers[kvp.Key] = kvp.Value;
+                return cachedResult;
+            }
+
+            var result = await Task.Run(() => ComputeFers(parks, boundaries));
+
+            await TryWriteJsonAsync(cachePath, new XferAreaResultCache
+            {
+                SchemaVersion = CacheSchemaVersion,
+                InputHash = inputHash,
+                Fers = new Dictionary<string, List<string>>(result.Fers, StringComparer.OrdinalIgnoreCase),
+                MatchedBoundaryCount = result.MatchedBoundaryCount
+            });
+            return result;
+        }
+
+        // ---- SOTA summits: which summit(s) fall within a park's own boundary ------------
+
+        // A SOTA (Summits on the Air) summit is just a point (its published
+        // coordinate), so matching it to a park is simpler than the park-vs-
+        // park case ComputeFers handles - same owner loop, same three helpers
+        // (BuildBoundaryGroups/FindOwnedBoundaries/IsPointInBoundaries), just
+        // testing a summit's point instead of another park's. No separate
+        // spatial prefilter is added here - IsPointInBoundaries already
+        // short-circuits on each boundary's own bounding box before any real
+        // polygon math, the same way it already does for ComputeFers.
+        //
+        // Result maps a park's Reference to the SOTA summit reference(s)
+        // (e.g. "W4G/NG-001") whose point falls inside that park's boundary -
+        // a candidate list for planning a combined POTA+SOTA activation, NOT
+        // a guarantee that operating there satisfies SOTA's own Activation
+        // Zone rule (within 25 vertical metres of the true summit) - see the
+        // Help file disclaimer.
+        public static Dictionary<string, List<string>> ComputeSotaMatches(
+            List<ParkRecord> parks, List<BoundaryFeature> boundaries, List<SotaSummit> summits)
+        {
+            var result = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            if (parks.Count == 0 || boundaries.Count == 0 || summits.Count == 0) return result;
+
+            var (boundaryGroups, boundaryWordSets) = BuildBoundaryGroups(boundaries);
+
+            foreach (var owner in parks)
+            {
+                var ownedBoundaries = FindOwnedBoundaries(owner.Name, boundaryGroups, boundaryWordSets);
+                if (ownedBoundaries == null) continue;
+
+                List<string>? matches = null;
+                foreach (var summit in summits)
+                {
+                    if (!IsPointInBoundaries(summit.Longitude, summit.Latitude, ownedBoundaries)) continue;
+                    matches ??= new List<string>();
+                    matches.Add(summit.Reference);
+                }
+
+                if (matches != null)
+                    result[owner.Reference] = matches.OrderBy(r => r, StringComparer.OrdinalIgnoreCase).ToList();
+            }
+
+            return result;
+        }
+
+        private class XferSotaResultCache
+        {
+            public int SchemaVersion { get; set; }
+            public string InputHash { get; set; } = "";
+            public Dictionary<string, List<string>> Matches { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        }
+
+        // See ComputeFersCachedAsync above - same persisted-until-something-
+        // real-changes caching, applied to the SOTA summit matcher. Summit
+        // fingerprints are just their Reference/Name/Lat/Lon directly (unlike
+        // BoundaryFingerprint/TrailFingerprintKey, a summit has no large
+        // coordinate geometry to worry about hashing).
+        public static async Task<Dictionary<string, List<string>>> ComputeSotaMatchesCachedAsync(
+            List<ParkRecord> parks, List<BoundaryFeature> boundaries, List<SotaSummit> summits,
+            string cacheFolder, string stateCode)
+        {
+            string cachePath = Path.Combine(cacheFolder, $"SotaMatchResults_{stateCode.ToUpperInvariant()}.cache.json");
+            string inputHash = ComputeContentHash(new
+            {
+                Parks = parks.Select(p => new { p.Reference, p.Name, p.Latitude, p.Longitude })
+                              .OrderBy(p => p.Reference, StringComparer.OrdinalIgnoreCase).ToList(),
+                Boundaries = boundaries.Select(BoundaryFingerprint)
+                                        .OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
+                                        .ThenBy(f => f.Layer, StringComparer.OrdinalIgnoreCase)
+                                        .ToList(),
+                Summits = summits.Select(s => new { s.Reference, s.Name, s.Latitude, s.Longitude })
+                                  .OrderBy(s => s.Reference, StringComparer.OrdinalIgnoreCase).ToList()
+            });
+
+            var cached = await TryReadJsonAsync<XferSotaResultCache>(cachePath);
+            if (cached != null && cached.SchemaVersion == CacheSchemaVersion && cached.InputHash == inputHash)
+            {
+                return new Dictionary<string, List<string>>(cached.Matches, StringComparer.OrdinalIgnoreCase);
+            }
+
+            var result = await Task.Run(() => ComputeSotaMatches(parks, boundaries, summits));
+
+            await TryWriteJsonAsync(cachePath, new XferSotaResultCache
+            {
+                SchemaVersion = CacheSchemaVersion,
+                InputHash = inputHash,
+                Matches = new Dictionary<string, List<string>>(result, StringComparer.OrdinalIgnoreCase)
+            });
+            return result;
+        }
+
         // ---- Trail routes: POTA's separate "within 100 ft of the trail" rule ------------
 
         // How close a park's point must be to a trail's actual path to count as
@@ -1084,6 +1303,80 @@ namespace PotaActivatorParkActivations
             }
             result.RelevantTrailParks.AddRange(relevant.Values);
 
+            return result;
+        }
+
+        private class XferTrailResultCache
+        {
+            public int SchemaVersion { get; set; }
+            public string InputHash { get; set; } = "";
+            public Dictionary<string, List<string>> Fers { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+            public List<string> RelevantTrailParkReferences { get; set; } = new();
+        }
+
+        // See ComputeFersCachedAsync above - same idea, applied to the trail
+        // matcher: skip recomputation until a candidate/test park's
+        // name/location, a trail's route, or the boundary data actually
+        // changes. RelevantTrailParks can't be serialized as full ParkRecords
+        // (they're the same objects ownerCandidates already holds, and callers
+        // rely on reference equality/up-to-date fields there), so only their
+        // References are persisted, and re-hydrated from ownerCandidates on a
+        // cache hit.
+        public static async Task<TrailFerResult> ComputeTrailFersCachedAsync(
+            List<ParkRecord> ownerCandidates, List<ParkRecord> testParks, List<TrailRoute> trails,
+            List<BoundaryFeature> boundaries, string cacheFolder, string stateCode)
+        {
+            string cachePath = Path.Combine(cacheFolder, $"XferTrailResults_{stateCode.ToUpperInvariant()}.cache.json");
+            string inputHash = ComputeContentHash(new
+            {
+                Candidates = ownerCandidates.Select(p => new { p.Reference, p.Name })
+                                             .OrderBy(p => p.Reference, StringComparer.OrdinalIgnoreCase).ToList(),
+                TestParks = testParks.Select(p => new { p.Reference, p.Name, p.Latitude, p.Longitude })
+                                      .OrderBy(p => p.Reference, StringComparer.OrdinalIgnoreCase).ToList(),
+                // Same fingerprint-not-full-geometry and stable-order reasoning as
+                // ComputeFersCachedAsync above - see BoundaryFingerprint/
+                // TrailFingerprint. Trails in particular can now come back in a
+                // different order after EnsureTrailRoutesAsync's merge (existing
+                // names keep their old position, but a newly-added trail is
+                // appended at the end), which would otherwise look like a change.
+                Trails = trails.Select(TrailFingerprint)
+                                .OrderBy(t => t.Name, StringComparer.OrdinalIgnoreCase)
+                                .ToList(),
+                Boundaries = boundaries.Select(BoundaryFingerprint)
+                                        .OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
+                                        .ThenBy(f => f.Layer, StringComparer.OrdinalIgnoreCase)
+                                        .ToList()
+            });
+
+            var cached = await TryReadJsonAsync<XferTrailResultCache>(cachePath);
+            if (cached != null && cached.SchemaVersion == CacheSchemaVersion && cached.InputHash == inputHash)
+            {
+                var cachedResult = new TrailFerResult();
+                foreach (var kvp in cached.Fers) cachedResult.Fers[kvp.Key] = kvp.Value;
+                // GroupBy-then-First, not a plain ToDictionary - ownerCandidates can
+                // contain a duplicate Reference (see the identical guard in
+                // Form1.cs's _allRawParks lookup), which would otherwise throw here
+                // only on a cache-hit run, never on the cache-miss run that primed it.
+                var byReference = ownerCandidates
+                    .GroupBy(p => p.Reference, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+                foreach (var reference in cached.RelevantTrailParkReferences)
+                {
+                    if (byReference.TryGetValue(reference, out var park))
+                        cachedResult.RelevantTrailParks.Add(park);
+                }
+                return cachedResult;
+            }
+
+            var result = await Task.Run(() => ComputeTrailFers(ownerCandidates, testParks, trails, boundaries));
+
+            await TryWriteJsonAsync(cachePath, new XferTrailResultCache
+            {
+                SchemaVersion = CacheSchemaVersion,
+                InputHash = inputHash,
+                Fers = new Dictionary<string, List<string>>(result.Fers, StringComparer.OrdinalIgnoreCase),
+                RelevantTrailParkReferences = result.RelevantTrailParks.Select(p => p.Reference).ToList()
+            });
             return result;
         }
 

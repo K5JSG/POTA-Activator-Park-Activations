@@ -11,6 +11,14 @@
         public string County { get; set; } = "";
         public string Fers { get; set; } = "";
         public string Kff { get; set; } = "";
+
+        // Comma-joined SOTA summit reference(s) whose published coordinate
+        // falls within this park's real boundary polygon - see
+        // FerLookupService.ComputeSotaMatches. Same "candidate list, not a
+        // guarantee" caveat as Fers: this only means the two programs' areas
+        // overlap on a map, not that a SOTA activation from here is valid -
+        // that still requires being within the summit's own Activation Zone.
+        public string Sota { get; set; } = "";
         public string State { get; set; } = "";
         public bool Completed { get; set; }
 

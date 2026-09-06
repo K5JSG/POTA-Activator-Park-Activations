@@ -26,6 +26,15 @@ namespace PotaActivatorParkActivations
         // layers without re-downloading anything.
         private List<FerLookupService.BoundaryFeature> _boundaries = new List<FerLookupService.BoundaryFeature>();
         private List<FerLookupService.TrailRoute> _trails = new List<FerLookupService.TrailRoute>();
+        private List<SotaSummit> _sotaSummits = new List<SotaSummit>();
+
+        // The state code _parks/_sotaSummits actually correspond to - kept
+        // separately from reading comboBoxState.SelectedValue again later
+        // (e.g. in buttonShowMap_Click), since the user could change that
+        // dropdown after loading a state but before showing the map, and
+        // the map must filter by whatever state was actually loaded, not
+        // whatever the dropdown currently shows.
+        private string _loadedStateCode = "";
 
         // The HTML from the most recent buttonShowMap_Click, kept so
         // buttonSaveMap_Click can write out a copy without re-fetching
@@ -201,6 +210,12 @@ namespace PotaActivatorParkActivations
         // the per-state boundary data above.
         private static readonly TimeSpan TrailRefreshInterval = TimeSpan.FromDays(30);
 
+        // SOTA's summit list carries community activation data (count/date/
+        // callsign) that changes about as often as POTA's own park list, not
+        // slow-changing geometry like the boundary/trail data above - same
+        // weekly cadence as DataRefreshInterval.
+        private static readonly TimeSpan SotaRefreshInterval = TimeSpan.FromDays(7);
+
         // Kelly Green used to highlight the button that's the natural "next step."
         private static readonly Color NextStepColor = ColorTranslator.FromHtml("#4CBB17");
         private bool _parksLoaded;
@@ -254,6 +269,12 @@ namespace PotaActivatorParkActivations
             // the worst case) plus normal cell padding.
             dataGridView1.Columns.Add(new DataGridViewTextBoxColumn { Name = "colFers", HeaderText = "Xfer's", DataPropertyName = "Fers", Width = 140, SortMode = DataGridViewColumnSortMode.Automatic });
             dataGridView1.Columns.Add(new DataGridViewTextBoxColumn { Name = "colKff", HeaderText = "KFF Ref", DataPropertyName = "Kff", Width = 90, SortMode = DataGridViewColumnSortMode.Automatic });
+            // Display-only, like colKff - a candidate list from our own
+            // boundary-polygon match (see FerLookupService.ComputeSotaMatches),
+            // not a SOTA-published cross-reference. Sized for one summit code
+            // ("W4G/NG-001") with a little room to spare; a park with more than
+            // one just scrolls/truncates like Xfer's does.
+            dataGridView1.Columns.Add(new DataGridViewTextBoxColumn { Name = "colSota", HeaderText = "SOTA Ref", DataPropertyName = "Sota", Width = 100, SortMode = DataGridViewColumnSortMode.Automatic });
             dataGridView1.Columns.Add(new DataGridViewTextBoxColumn { Name = "colState", HeaderText = "State", DataPropertyName = "State", Width = 60, SortMode = DataGridViewColumnSortMode.Automatic, Visible = false });
             dataGridView1.Columns.Add(new DataGridViewCheckBoxColumn { Name = "colCompleted", HeaderText = "Completed", DataPropertyName = "Completed", Width = 80, SortMode = DataGridViewColumnSortMode.Automatic });
             // Display-only, like every other column here (auto-detected from
@@ -966,7 +987,8 @@ namespace PotaActivatorParkActivations
                 // state's own boundary polygons, so every reference it returns is
                 // guaranteed to already be one of _parks - never a park from a
                 // neighboring state, even a bordering one.
-                var ferResult = await Task.Run(() => FerLookupService.ComputeFers(_parks, boundaries));
+                var ferResult = await FerLookupService.ComputeFersCachedAsync(
+                    _parks, boundaries, GetWritableAppDataFolder(), stateCode);
                 foreach (var park in _parks)
                 {
                     if (ferResult.Fers.TryGetValue(park.Reference, out var others))
@@ -984,7 +1006,8 @@ namespace PotaActivatorParkActivations
                 // GeocodeParksAsync above excluded it from _parks for having its
                 // one POTA point outside this state. testParks is still _parks:
                 // the real, in-state points to check against each trail's route.
-                var trailResult = await Task.Run(() => FerLookupService.ComputeTrailFers(candidates, _parks, trails, boundaries));
+                var trailResult = await FerLookupService.ComputeTrailFersCachedAsync(
+                    candidates, _parks, trails, boundaries, GetWritableAppDataFolder(), stateCode);
                 foreach (var park in _parks)
                 {
                     if (!trailResult.Fers.TryGetValue(park.Reference, out var trailOthers)) continue;
@@ -1029,9 +1052,23 @@ namespace PotaActivatorParkActivations
                     _parks = _parks.OrderBy(p => p.AnchorOutOfState).ThenBy(p => p.Name).ToList();
                 }
 
+                textBoxStatus.Text = "Checking SOTA summits for boundary overlaps...";
+                var sotaSummits = await SotaService.EnsureSummitsAsync(
+                    _http, GetWritableAppDataFolder(), SotaRefreshInterval,
+                    msg => textBoxStatus.Text = msg);
+                _sotaSummits = SotaService.FilterCurrentlyValid(sotaSummits);
+                var sotaMatches = await FerLookupService.ComputeSotaMatchesCachedAsync(
+                    _parks, boundaries, _sotaSummits, GetWritableAppDataFolder(), stateCode);
+                foreach (var park in _parks)
+                {
+                    if (sotaMatches.TryGetValue(park.Reference, out var summitRefs))
+                        park.Sota = string.Join(", ", summitRefs);
+                }
+
                 dataGridView1.Columns["colState"]!.Visible = newTrailRows.Count > 0;
                 BindGrid();
                 _parksLoaded = true;
+                _loadedStateCode = stateCode;
                 _adifLoaded = false;
                 _lastMapHtml = null;
 
@@ -1050,7 +1087,11 @@ namespace PotaActivatorParkActivations
                 string trailNote = newTrailRows.Count > 0
                     ? $" Also found {newTrailRows.Count} national trail(s) whose route crosses this state (shown with their own state) - verify you're within 100 ft of the trail before claiming."
                     : "";
-                textBoxStatus.Text = $"Loaded {_parks.Count} parks for {stateCode}.{ferNote}{trailNote}";
+                int sotaMatchedParks = sotaMatches.Count;
+                string sotaNote = sotaMatchedParks > 0
+                    ? $" {sotaMatchedParks} park(s) may contain a SOTA summit - verify you're within its Activation Zone before claiming a SOTA activation."
+                    : "";
+                textBoxStatus.Text = $"Loaded {_parks.Count} parks for {stateCode}.{ferNote}{trailNote}{sotaNote}";
             }
             catch (Exception ex)
             {
@@ -1232,7 +1273,20 @@ namespace PotaActivatorParkActivations
                     mapParks.Add(dto);
                 }
 
-                string html = MapService.BuildMapHtml(mapParks, BuildBoundaryLayerDtos());
+                var mapSotaSummits = SotaService.FilterByState(_sotaSummits, _loadedStateCode).Select(s => new MapSotaSummitDto
+                {
+                    Reference = s.Reference,
+                    Name = s.Name,
+                    Lat = s.Latitude,
+                    Lon = s.Longitude,
+                    AltFeet = s.AltFt,
+                    Points = s.Points,
+                    ActivationCount = s.ActivationCount,
+                    ActivationCall = s.ActivationCall,
+                    ActivationDate = s.ActivationDate
+                }).ToList();
+
+                string html = MapService.BuildMapHtml(mapParks, BuildBoundaryLayerDtos(), mapSotaSummits);
                 string tempPath = Path.Combine(GetAppTempFolder(), "POTAActivatorParkActivations_Map_" + Guid.NewGuid().ToString("N") + ".html");
                 File.WriteAllText(tempPath, html, Encoding.UTF8);
                 _tempFilesToCleanUp.Add(tempPath);
