@@ -41,7 +41,7 @@
             menuStrip1.Items.AddRange(new ToolStripItem[] { helpToolStripMenuItem, aboutToolStripMenuItem });
             menuStrip1.Location = new Point(0, 0);
             menuStrip1.Name = "menuStrip1";
-            menuStrip1.Size = new Size(1360, 24);
+            menuStrip1.Size = new Size(1460, 24);
             menuStrip1.TabIndex = 10;
             menuStrip1.Text = "menuStrip1";
             // 
@@ -158,7 +158,7 @@
             // 
             progressBar1.Location = new Point(12, 105);
             progressBar1.Name = "progressBar1";
-            progressBar1.Size = new Size(1336, 15);
+            progressBar1.Size = new Size(1436, 15);
             progressBar1.TabIndex = 2;
             // 
             // textBoxStatus
@@ -191,7 +191,7 @@
             dataGridView1.ReadOnly = true;
             dataGridView1.RowHeadersWidth = 25;
             dataGridView1.SelectionMode = DataGridViewSelectionMode.CellSelect;
-            dataGridView1.Size = new Size(1336, 470);
+            dataGridView1.Size = new Size(1436, 470);
             dataGridView1.TabIndex = 0;
             // 
             // labelSearch
@@ -222,7 +222,7 @@
             // the smallest size the window can be resized down to, so it
             // holds regardless of which state is loaded or how the window
             // gets resized.
-            ClientSize = new Size(1360, 639);
+            ClientSize = new Size(1460, 639);
             Controls.Add(dataGridView1);
             Controls.Add(textBoxStatus);
             Controls.Add(progressBar1);
@@ -239,7 +239,7 @@
             Controls.Add(textBoxSearch);
             Controls.Add(menuStrip1);
             MainMenuStrip = menuStrip1;
-            MinimumSize = new Size(1360, 678);
+            MinimumSize = new Size(1460, 678);
             Name = "Form1";
             Text = "POTA Activator Park Activations";
             Load += Form1_Load;

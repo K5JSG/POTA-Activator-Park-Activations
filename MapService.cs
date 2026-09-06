@@ -59,6 +59,42 @@ namespace PotaActivatorParkActivations
         public string MyDate { get; set; } = "";
     }
 
+    // One SOTA summit, for the optional "SOTA Summits" map layer - see
+    // Form1's _sotaSummits (already filtered to currently-valid US summits)
+    // and FerLookupService.ComputeSotaMatches, which is what actually decides
+    // which park's row gets a SOTA Ref value. This layer shows every loaded
+    // summit regardless of that match, since a summit just outside every
+    // park's boundary is still useful to see on the map.
+    public class MapSotaSummitDto
+    {
+        [JsonPropertyName("reference")]
+        public string Reference { get; set; } = "";
+
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = "";
+
+        [JsonPropertyName("lat")]
+        public double Lat { get; set; }
+
+        [JsonPropertyName("lon")]
+        public double Lon { get; set; }
+
+        [JsonPropertyName("altFeet")]
+        public double AltFeet { get; set; }
+
+        [JsonPropertyName("points")]
+        public int Points { get; set; }
+
+        [JsonPropertyName("activationCount")]
+        public int ActivationCount { get; set; }
+
+        [JsonPropertyName("activationCall")]
+        public string ActivationCall { get; set; } = "";
+
+        [JsonPropertyName("activationDate")]
+        public string ActivationDate { get; set; } = "";
+    }
+
     // One toggleable map layer - e.g. NY's "PAD-US" or "EC" area layers, or a
     // single named national trail. Mirrors how potamap.us (github.com/cwhelchel/
     // potamap.ol) groups its own boundary data into named, independently
@@ -101,21 +137,26 @@ namespace PotaActivatorParkActivations
         // any web browser - no server, no install, no account, no API key. It uses
         // Leaflet (a free open-source mapping library) and OpenStreetMap map tiles
         // (also free), both loaded from their public content-delivery networks.
-        public static string BuildMapHtml(List<MapParkDto> parks, List<MapBoundaryLayerDto>? boundaryLayers = null)
+        public static string BuildMapHtml(
+            List<MapParkDto> parks, List<MapBoundaryLayerDto>? boundaryLayers = null,
+            List<MapSotaSummitDto>? sotaSummits = null)
         {
             var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
             string parkJson = JsonSerializer.Serialize(parks, jsonOptions);
             string boundaryJson = JsonSerializer.Serialize(boundaryLayers ?? new List<MapBoundaryLayerDto>(), jsonOptions);
+            string sotaJson = JsonSerializer.Serialize(sotaSummits ?? new List<MapSotaSummitDto>(), jsonOptions);
 
-            // Guard against a park/boundary name that happens to contain
+            // Guard against a park/boundary/summit name that happens to contain
             // "</script>" - that would otherwise break out of our embedded
             // <script> block.
             parkJson = parkJson.Replace("</", "<\\/");
             boundaryJson = boundaryJson.Replace("</", "<\\/");
+            sotaJson = sotaJson.Replace("</", "<\\/");
 
             string html = HtmlTemplate
                 .Replace("__PARK_DATA__", parkJson)
-                .Replace("__BOUNDARY_DATA__", boundaryJson);
+                .Replace("__BOUNDARY_DATA__", boundaryJson)
+                .Replace("__SOTA_DATA__", sotaJson);
             return html;
         }
 
@@ -187,12 +228,14 @@ namespace PotaActivatorParkActivations
   <div><span class=""legend-swatch"" style=""background:#FF6700;""></span>Boat access only, not yet activated</div>
   <div><span class=""legend-swatch"" style=""background:#2E8B22;""></span>Activated by me</div>
   <div><span class=""legend-swatch"" style=""background:#1a73e8;""></span>Your location</div>
+  <div><span class=""legend-swatch"" style=""background:#8B4513;""></span>SOTA summit (toggle at top-left)</div>
 </div>
 
 <script src=""https://unpkg.com/leaflet@1.9.4/dist/leaflet.js""></script>
 <script>
 var parkData = __PARK_DATA__;
 var boundaryLayers = __BOUNDARY_DATA__;
+var sotaData = __SOTA_DATA__;
 
 function escapeHtml(text) {
   if (!text) return '';
@@ -203,28 +246,33 @@ function escapeHtml(text) {
     .replace(/""/g, '&quot;');
 }
 
-function makePinIcon(color, showCheck) {
+// A plain filled circle, not a teardrop - matches the real pota.app map's
+// own park markers (confirmed against the live site), not this app's
+// earlier custom pin shape. Fixed pixel dimensions throughout (SVG
+// width/height/viewBox and Leaflet's iconSize are all plain numbers, not
+// percentages or viewport units), so this renders at the same physical size
+// on any screen/DPI - Leaflet divIcon markers also don't scale with map zoom.
+function makeCircleIcon(color, showCheck) {
   var checkMark = showCheck
-    ? '<path d=""M8 15.5l4.2 4.2L22 9.5"" fill=""none"" stroke=""white"" stroke-width=""3"" stroke-linecap=""round"" stroke-linejoin=""round""/>'
+    ? '<path d=""M4 7.3l2 2 4.3-5"" fill=""none"" stroke=""white"" stroke-width=""1.8"" stroke-linecap=""round"" stroke-linejoin=""round""/>'
     : '';
   var svg =
-    '<svg width=""28"" height=""40"" viewBox=""0 0 30 42"" xmlns=""http://www.w3.org/2000/svg"">' +
-    '<path d=""M15 0C6.7 0 0 6.7 0 15c0 11 15 27 15 27s15-16 15-27C30 6.7 23.3 0 15 0z"" ' +
-    'fill=""' + color + '"" stroke=""#333333"" stroke-width=""1.5""/>' +
+    '<svg width=""14"" height=""14"" viewBox=""0 0 14 14"" xmlns=""http://www.w3.org/2000/svg"">' +
+    '<circle cx=""7"" cy=""7"" r=""6"" fill=""' + color + '"" stroke=""#333333"" stroke-width=""1.2""/>' +
     checkMark +
     '</svg>';
   return L.divIcon({
     html: svg,
     className: '',
-    iconSize: [28, 40],
-    iconAnchor: [14, 40],
-    popupAnchor: [0, -36]
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
+    popupAnchor: [0, -7]
   });
 }
 
-var yellowIcon = makePinIcon('#FFD500', false);
-var orangeIcon = makePinIcon('#FF6700', false);
-var greenIcon = makePinIcon('#2E8B22', true);
+var yellowIcon = makeCircleIcon('#FFD500', false);
+var orangeIcon = makeCircleIcon('#FF6700', false);
+var greenIcon = makeCircleIcon('#2E8B22', true);
 
 function buildPopupHtml(p) {
   var link = 'https://pota.app/#/park/' + encodeURIComponent(p.reference);
@@ -260,6 +308,48 @@ function buildPopupHtml(p) {
     var myPlural = p.myCount === 1 ? 'time' : 'times';
     html += '<div class=""my-line"">You have activated ' + p.myCount + ' ' + myPlural +
             ', most recently on ' + escapeHtml(p.myDate) + '.</div>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
+// A brown mountain-peak glyph (with a snow-cap highlight) - one fixed icon
+// for every summit, not color-coded by activation status.
+function makeSotaIcon() {
+  var svg =
+    '<svg width=""22"" height=""22"" viewBox=""0 0 22 22"" xmlns=""http://www.w3.org/2000/svg"">' +
+    '<path d=""M11 2 L20 19 L2 19 Z"" fill=""#8B4513"" stroke=""#3a2312"" stroke-width=""1.3"" stroke-linejoin=""round""/>' +
+    '<path d=""M11 2 L14.5 9 L7.5 9 Z"" fill=""#ffffff"" opacity=""0.85""/>' +
+    '</svg>';
+  return L.divIcon({
+    html: svg,
+    className: '',
+    iconSize: [22, 22],
+    iconAnchor: [11, 19],
+    popupAnchor: [0, -17]
+  });
+}
+
+var sotaIcon = makeSotaIcon();
+
+// No outbound link here (unlike buildPopupHtml's pota.app one) - SOTA doesn't
+// publish a simple per-summit URL pattern the way POTA does, so this only
+// shows the summit's own published data.
+function buildSotaPopupHtml(s) {
+  var html = '<div class=""pota-popup"" style=""min-width:200px;"">';
+  html += '<div style=""margin-bottom:4px;font-weight:bold;"">' + escapeHtml(s.reference) + ' - ' + escapeHtml(s.name) + '</div>';
+  html += '<div>Elevation: ' + Math.round(s.altFeet).toLocaleString() + ' ft</div>';
+  html += '<div>Points: ' + s.points + '</div>';
+
+  if (s.activationCount > 0) {
+    var plural = s.activationCount === 1 ? 'time' : 'times';
+    html += '<div>Activated ' + s.activationCount + ' ' + plural;
+    if (s.activationCall) html += ', most recently by ' + escapeHtml(s.activationCall);
+    if (s.activationDate) html += ' on ' + escapeHtml(s.activationDate);
+    html += '.</div>';
+  } else {
+    html += '<div>No activations found on record.</div>';
   }
 
   html += '</div>';
@@ -478,12 +568,26 @@ var satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/se
   attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
 });
 
-L.control.layers({ 'Street': streetLayer, 'Satellite': satelliteLayer }, null, {
-  position: 'topleft',
-  collapsed: false
-}).addTo(map);
+var workedLayer = L.layerGroup().addTo(map);
+var notWorkedLayer = L.layerGroup().addTo(map);
+// Not added to the map here (unlike workedLayer/notWorkedLayer above) - a
+// state can have many summits, so this starts unchecked/off, same convention
+// as the boundary/trail layers below (addBoundaryLayers).
+var sotaLayer = L.layerGroup();
+
+L.control.layers(
+  { 'Street': streetLayer, 'Satellite': satelliteLayer },
+  { 'Worked': workedLayer, 'Not worked': notWorkedLayer, 'SOTA Summits': sotaLayer },
+  { position: 'topleft', collapsed: false }
+).addTo(map);
 
 addBoundaryLayers(map);
+
+sotaData.forEach(function (s) {
+  var marker = L.marker([s.lat, s.lon], { icon: sotaIcon });
+  marker.bindPopup(buildSotaPopupHtml(s));
+  marker.addTo(sotaLayer);
+});
 
 var bounds = [];
 parkData.forEach(function (p) {
@@ -493,7 +597,7 @@ parkData.forEach(function (p) {
   var icon = p.completed ? greenIcon : (p.boatAccessOnly ? orangeIcon : yellowIcon);
   var marker = L.marker([p.lat, p.lon], { icon: icon });
   marker.bindPopup(buildPopupHtml(p));
-  marker.addTo(map);
+  marker.addTo(p.completed ? workedLayer : notWorkedLayer);
   bounds.push([p.lat, p.lon]);
 });
 
