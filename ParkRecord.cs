@@ -13,6 +13,12 @@
         public string Kff { get; set; } = "";
         public string State { get; set; } = "";
         public bool Completed { get; set; }
+
+        // User-set (checkbox in the grid, not derived from any data source -
+        // see Form1's _boatAccessOnlyRefs/BoatAccessOnlyFileName): true for a
+        // park you've noted is only reachable by boat. Persists across
+        // reloads by Reference, independent of which state's list it's in.
+        public bool BoatAccessOnly { get; set; }
         public bool OutOfState { get; set; }
         public bool MultiState { get; set; }
         public bool Exclude { get; set; }

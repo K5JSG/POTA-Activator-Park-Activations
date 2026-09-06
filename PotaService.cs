@@ -336,6 +336,167 @@ namespace PotaActivatorParkActivations
             return new Dictionary<string, ActivationInfo>(results, StringComparer.OrdinalIgnoreCase);
         }
 
+        // ---- Boat-only access, from POTA's own park-info API ----------------------------
+
+        // Distinct from ActivationsUrlBase above - that's per-QSO activation
+        // history; this is the park's own metadata record, which (confirmed
+        // against the live API) includes an admin-curated "accessMethods" tag
+        // such as "Automobile,Foot" or "Boat" - exactly what a park's access
+        // options are, maintained by POTA itself rather than guessed at here.
+        private const string ParkInfoUrlBase = "https://api.pota.app/park/";
+        private const string AccessMethodsCacheFileName = "AccessMethods.cache.csv";
+
+        // Returns the raw accessMethods string ("Automobile,Boat,Foot", or ""
+        // if POTA has no tag for this park), or null if the network call
+        // itself failed - callers must treat those two differently: "" is a
+        // confirmed answer worth caching, null means "couldn't check, don't
+        // touch whatever's cached."
+        public static async Task<string?> GetAccessMethodsAsync(HttpClient http, string reference)
+        {
+            try
+            {
+                string url = ParkInfoUrlBase + Uri.EscapeDataString(reference);
+                string json = await http.GetStringAsync(url);
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("accessMethods", out var value) && value.ValueKind == JsonValueKind.String)
+                    return value.GetString() ?? "";
+                return "";
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        // True only when accessMethods lists Boat and nothing else -
+        // "Boat,Foot" or "Automobile,Boat" means there's some other way in
+        // too, so that doesn't count as boat-ONLY.
+        public static bool IsBoatAccessOnly(string accessMethods)
+        {
+            if (string.IsNullOrWhiteSpace(accessMethods)) return false;
+            var methods = accessMethods.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            return methods.Length == 1 && methods[0].Equals("Boat", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // This app is meant to be usable in the field, often with no signal
+        // at all - ';' rather than ',' as the field separator since
+        // accessMethods itself is comma-separated ("Automobile,Boat,Foot").
+        private static Dictionary<string, (string AccessMethods, DateTime FetchedUtc)> LoadAccessMethodsCache(string cacheFolder)
+        {
+            var result = new Dictionary<string, (string, DateTime)>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                string path = Path.Combine(cacheFolder, AccessMethodsCacheFileName);
+                if (!File.Exists(path)) return result;
+
+                foreach (string line in File.ReadAllLines(path).Skip(1)) // skip header
+                {
+                    string[] parts = line.Split(';');
+                    if (parts.Length == 3 &&
+                        DateTime.TryParse(parts[2], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var fetched))
+                        result[parts[0]] = (parts[1], fetched);
+                }
+            }
+            catch
+            {
+                // Fails safe: just means less (or no) cache to work with this run.
+            }
+            return result;
+        }
+
+        private static void SaveAccessMethodsCache(string cacheFolder, Dictionary<string, (string AccessMethods, DateTime FetchedUtc)> cache)
+        {
+            try
+            {
+                Directory.CreateDirectory(cacheFolder);
+                string path = Path.Combine(cacheFolder, AccessMethodsCacheFileName);
+                var lines = new List<string> { "Reference;AccessMethods;FetchedUtc" };
+                lines.AddRange(cache.Select(kv => $"{kv.Key};{kv.Value.AccessMethods};{kv.Value.FetchedUtc:o}"));
+                File.WriteAllLines(path, lines);
+            }
+            catch
+            {
+                // Best-effort - a failed save just means less is cached for next time.
+            }
+        }
+
+        // Determines Boat Access Only for a whole list of parks, preferring a
+        // local cache so this works fully offline once a park's been looked
+        // up at least once before. Unlike the other data this app caches (KFF,
+        // boundaries, the park list itself), there's no weekly re-check here -
+        // a park's real-world access method essentially never changes, so an
+        // existing cache entry is treated as good permanently, not just for a
+        // week. Only two things cause a (re-)lookup:
+        //   - A park with NO cache entry at all - new to this cache, most
+        //     often because it's new to POTA.
+        //   - You manually correcting it in the grid (see
+        //     DataGridView1_CellValueChanged/_boatAccessOnlyOverrides) - that
+        //     takes precedence over the cache from then on, for exactly the
+        //     rare real change (a bridge washes out, POTA fixes a bad tag)
+        //     this permanent caching would otherwise miss.
+        // A lookup that fails (offline, etc.) leaves any existing cache entry
+        // alone rather than treating it as "unknown" - only a park that's
+        // NEVER been successfully looked up ends up unknown while offline.
+        public static async Task<Dictionary<string, bool>> FetchBoatAccessOnlyAsync(
+            HttpClient http, List<ParkRecord> parks, string cacheFolder, IProgress<int> progress)
+        {
+            var results = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            if (parks.Count == 0) return results;
+
+            var cache = LoadAccessMethodsCache(cacheFolder);
+            var toFetch = new List<ParkRecord>();
+            foreach (var park in parks)
+            {
+                if (cache.TryGetValue(park.Reference, out var cached))
+                    results[park.Reference] = IsBoatAccessOnly(cached.AccessMethods);
+                else
+                    toFetch.Add(park);
+            }
+
+            if (toFetch.Count == 0)
+            {
+                progress.Report(100);
+                return results;
+            }
+
+            int completed = 0;
+            using var semaphore = new SemaphoreSlim(6);
+
+            var tasks = toFetch.Select(async park =>
+            {
+                await semaphore.WaitAsync();
+                try
+                {
+                    string? accessMethods = await GetAccessMethodsAsync(http, park.Reference);
+                    if (accessMethods != null)
+                    {
+                        // A real (possibly empty) answer - refresh the cache.
+                        lock (cache) cache[park.Reference] = (accessMethods, DateTime.UtcNow);
+                        results[park.Reference] = IsBoatAccessOnly(accessMethods);
+                    }
+                    else
+                    {
+                        // Couldn't reach it - fall back to a stale cache
+                        // entry if there is one, otherwise genuinely unknown.
+                        bool hasStale;
+                        (string AccessMethods, DateTime FetchedUtc) stale;
+                        lock (cache) hasStale = cache.TryGetValue(park.Reference, out stale);
+                        results[park.Reference] = hasStale && IsBoatAccessOnly(stale.AccessMethods);
+                    }
+                }
+                finally
+                {
+                    semaphore.Release();
+                    int done = Interlocked.Increment(ref completed);
+                    progress.Report((int)(done * 100.0 / toFetch.Count));
+                }
+            });
+
+            await Task.WhenAll(tasks);
+            SaveAccessMethodsCache(cacheFolder, cache);
+            return results;
+        }
+
         // ---- "Activated by me" history, straight from your ADIF file --------------------
 
         // Scans the ADIF log for every QSO record where YOU were the activator

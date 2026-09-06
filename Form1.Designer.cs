@@ -26,9 +26,9 @@
             buttonExportExcel = new Button();
             buttonShowMap = new Button();
             buttonSaveMap = new Button();
-            labelWwffDate = new Label();
+            textBoxWwffDate = new TextBox();
             progressBar1 = new ProgressBar();
-            labelStatus = new Label();
+            textBoxStatus = new TextBox();
             dataGridView1 = new DataGridView();
             labelSearch = new Label();
             textBoxSearch = new TextBox();
@@ -41,7 +41,7 @@
             menuStrip1.Items.AddRange(new ToolStripItem[] { helpToolStripMenuItem, aboutToolStripMenuItem });
             menuStrip1.Location = new Point(0, 0);
             menuStrip1.Name = "menuStrip1";
-            menuStrip1.Size = new Size(1244, 24);
+            menuStrip1.Size = new Size(1360, 24);
             menuStrip1.TabIndex = 10;
             menuStrip1.Text = "menuStrip1";
             // 
@@ -137,30 +137,47 @@
             buttonSaveMap.UseVisualStyleBackColor = true;
             buttonSaveMap.Click += buttonSaveMap_Click;
             //
-            // labelWwffDate
-            // 
-            labelWwffDate.AutoSize = true;
-            labelWwffDate.Location = new Point(901, 70);
-            labelWwffDate.Name = "labelWwffDate";
-            labelWwffDate.Size = new Size(130, 16);
-            labelWwffDate.TabIndex = 12;
-            labelWwffDate.Text = "WWFF data: not loaded";
+            // textBoxWwffDate
+            //
+            // A borderless, read-only TextBox rather than a Label - looks the same
+            // (colors matched to the form so there's no visible box) but, unlike a
+            // Label, its text can be selected and copied to the clipboard.
+            textBoxWwffDate.AutoSize = false;
+            textBoxWwffDate.BackColor = SystemColors.Control;
+            textBoxWwffDate.BorderStyle = BorderStyle.None;
+            textBoxWwffDate.ForeColor = SystemColors.ControlText;
+            textBoxWwffDate.Location = new Point(901, 70);
+            textBoxWwffDate.Name = "textBoxWwffDate";
+            textBoxWwffDate.ReadOnly = true;
+            textBoxWwffDate.Size = new Size(220, 16);
+            textBoxWwffDate.TabIndex = 12;
+            textBoxWwffDate.TabStop = false;
+            textBoxWwffDate.Text = "WWFF data: not loaded";
             // 
             // progressBar1
             // 
             progressBar1.Location = new Point(12, 105);
             progressBar1.Name = "progressBar1";
-            progressBar1.Size = new Size(1220, 15);
+            progressBar1.Size = new Size(1336, 15);
             progressBar1.TabIndex = 2;
             // 
-            // labelStatus
-            // 
-            labelStatus.AutoSize = true;
-            labelStatus.Location = new Point(12, 125);
-            labelStatus.Name = "labelStatus";
-            labelStatus.Size = new Size(42, 16);
-            labelStatus.TabIndex = 1;
-            labelStatus.Text = "Ready.";
+            // textBoxStatus
+            //
+            // Borderless, read-only TextBox rather than a Label - same reasoning as
+            // textBoxWwffDate below: looks identical, but status/result text (park
+            // counts, confirmations, error summaries) can now be selected and copied.
+            textBoxStatus.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            textBoxStatus.AutoSize = false;
+            textBoxStatus.BackColor = SystemColors.Control;
+            textBoxStatus.BorderStyle = BorderStyle.None;
+            textBoxStatus.ForeColor = SystemColors.ControlText;
+            textBoxStatus.Location = new Point(12, 125);
+            textBoxStatus.Name = "textBoxStatus";
+            textBoxStatus.ReadOnly = true;
+            textBoxStatus.Size = new Size(1336, 16);
+            textBoxStatus.TabIndex = 1;
+            textBoxStatus.TabStop = false;
+            textBoxStatus.Text = "Ready.";
             // 
             // dataGridView1
             // 
@@ -174,7 +191,7 @@
             dataGridView1.ReadOnly = true;
             dataGridView1.RowHeadersWidth = 25;
             dataGridView1.SelectionMode = DataGridViewSelectionMode.CellSelect;
-            dataGridView1.Size = new Size(1220, 470);
+            dataGridView1.Size = new Size(1336, 470);
             dataGridView1.TabIndex = 0;
             // 
             // labelSearch
@@ -194,14 +211,22 @@
             textBoxSearch.Size = new Size(300, 23);
             textBoxSearch.TabIndex = 11;
             textBoxSearch.TextChanged += textBoxSearch_TextChanged;
-            // 
+            //
             // Form1
-            // 
-            ClientSize = new Size(1244, 639);
+            //
+            // Width (both here and MinimumSize below) is sized so the grid
+            // never needs a horizontal scrollbar to see every column,
+            // including colState (hidden most of the time, but shown for a
+            // state with an out-of-state/multi-state Xfer - see
+            // buttonLoadParks_Click) - not just at this default size, but at
+            // the smallest size the window can be resized down to, so it
+            // holds regardless of which state is loaded or how the window
+            // gets resized.
+            ClientSize = new Size(1360, 639);
             Controls.Add(dataGridView1);
-            Controls.Add(labelStatus);
+            Controls.Add(textBoxStatus);
             Controls.Add(progressBar1);
-            Controls.Add(labelWwffDate);
+            Controls.Add(textBoxWwffDate);
             Controls.Add(buttonSaveMap);
             Controls.Add(buttonShowMap);
             Controls.Add(buttonExportExcel);
@@ -214,7 +239,7 @@
             Controls.Add(textBoxSearch);
             Controls.Add(menuStrip1);
             MainMenuStrip = menuStrip1;
-            MinimumSize = new Size(970, 678);
+            MinimumSize = new Size(1360, 678);
             Name = "Form1";
             Text = "POTA Activator Park Activations";
             Load += Form1_Load;
@@ -236,9 +261,9 @@
         private System.Windows.Forms.Button buttonExportExcel;
         private System.Windows.Forms.Button buttonShowMap;
         private System.Windows.Forms.Button buttonSaveMap;
-        private System.Windows.Forms.Label labelWwffDate;
+        private System.Windows.Forms.TextBox textBoxWwffDate;
         private System.Windows.Forms.ProgressBar progressBar1;
-        private System.Windows.Forms.Label labelStatus;
+        private System.Windows.Forms.TextBox textBoxStatus;
         private System.Windows.Forms.DataGridView dataGridView1;
         private System.Windows.Forms.Label labelSearch;
         private System.Windows.Forms.TextBox textBoxSearch;

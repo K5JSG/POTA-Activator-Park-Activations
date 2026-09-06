@@ -16,8 +16,8 @@
         private void InitializeComponent()
         {
             this.labelAppName = new System.Windows.Forms.Label();
-            this.labelVersion = new System.Windows.Forms.Label();
-            this.labelPublished = new System.Windows.Forms.Label();
+            this.textBoxVersion = new System.Windows.Forms.TextBox();
+            this.textBoxPublished = new System.Windows.Forms.TextBox();
             this.textBoxLicense = new System.Windows.Forms.TextBox();
             this.buttonOk = new System.Windows.Forms.Button();
             this.SuspendLayout();
@@ -31,21 +31,36 @@
             this.labelAppName.Size = new System.Drawing.Size(340, 27);
             this.labelAppName.Text = "POTA Activator Park Activations";
             //
-            // labelVersion
+            // textBoxVersion
             //
-            this.labelVersion.AutoSize = true;
-            this.labelVersion.Location = new System.Drawing.Point(22, 62);
-            this.labelVersion.Name = "labelVersion";
-            this.labelVersion.Size = new System.Drawing.Size(90, 15);
-            this.labelVersion.Text = "Version 0.0.0";
+            // Borderless, read-only TextBoxes rather than Labels - look identical,
+            // but the version/build-date text can be selected and copied (e.g. into
+            // a bug report).
+            this.textBoxVersion.AutoSize = false;
+            this.textBoxVersion.BackColor = System.Drawing.SystemColors.Control;
+            this.textBoxVersion.BorderStyle = System.Windows.Forms.BorderStyle.None;
+            this.textBoxVersion.ForeColor = System.Drawing.SystemColors.ControlText;
+            this.textBoxVersion.Location = new System.Drawing.Point(22, 62);
+            this.textBoxVersion.Name = "textBoxVersion";
+            this.textBoxVersion.ReadOnly = true;
+            this.textBoxVersion.Size = new System.Drawing.Size(300, 15);
+            this.textBoxVersion.TabIndex = 4;
+            this.textBoxVersion.TabStop = false;
+            this.textBoxVersion.Text = "Version 0.0.0";
             //
-            // labelPublished
+            // textBoxPublished
             //
-            this.labelPublished.AutoSize = true;
-            this.labelPublished.Location = new System.Drawing.Point(22, 82);
-            this.labelPublished.Name = "labelPublished";
-            this.labelPublished.Size = new System.Drawing.Size(90, 15);
-            this.labelPublished.Text = "Published: ";
+            this.textBoxPublished.AutoSize = false;
+            this.textBoxPublished.BackColor = System.Drawing.SystemColors.Control;
+            this.textBoxPublished.BorderStyle = System.Windows.Forms.BorderStyle.None;
+            this.textBoxPublished.ForeColor = System.Drawing.SystemColors.ControlText;
+            this.textBoxPublished.Location = new System.Drawing.Point(22, 82);
+            this.textBoxPublished.Name = "textBoxPublished";
+            this.textBoxPublished.ReadOnly = true;
+            this.textBoxPublished.Size = new System.Drawing.Size(300, 15);
+            this.textBoxPublished.TabIndex = 5;
+            this.textBoxPublished.TabStop = false;
+            this.textBoxPublished.Text = "Published: ";
             //
             // textBoxLicense
             //
@@ -73,8 +88,8 @@
             this.ClientSize = new System.Drawing.Size(484, 310);
             this.Controls.Add(this.buttonOk);
             this.Controls.Add(this.textBoxLicense);
-            this.Controls.Add(this.labelPublished);
-            this.Controls.Add(this.labelVersion);
+            this.Controls.Add(this.textBoxPublished);
+            this.Controls.Add(this.textBoxVersion);
             this.Controls.Add(this.labelAppName);
             this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
@@ -87,8 +102,8 @@
         }
 
         private System.Windows.Forms.Label labelAppName;
-        private System.Windows.Forms.Label labelVersion;
-        private System.Windows.Forms.Label labelPublished;
+        private System.Windows.Forms.TextBox textBoxVersion;
+        private System.Windows.Forms.TextBox textBoxPublished;
         private System.Windows.Forms.TextBox textBoxLicense;
         private System.Windows.Forms.Button buttonOk;
     }
