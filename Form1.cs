@@ -4,7 +4,9 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -43,6 +45,19 @@ namespace PotaActivatorParkActivations
         // that's exactly when the underlying data a map would show goes
         // stale.
         private string? _lastMapHtml;
+
+        // Serves the most recent buttonShowMap_Click's HTML over
+        // http://127.0.0.1 instead of writing it to a file:// temp file.
+        // Chrome/Edge treat file:// pages as an insecure context, so
+        // MapService's browser-geolocation "you are here" marker (see
+        // MapService.cs) is silently blocked there - the only workaround is
+        // manually whitelisting the exact temp path via chrome://flags, per
+        // user/browser/machine, which isn't something this app can do for
+        // people it's shared with. localhost is a secure context everywhere
+        // with no flags needed, so this sidesteps the problem entirely.
+        // Only one listener runs at a time - StartMapServer stops whatever
+        // was already running before starting a new one.
+        private HttpListener? _mapHttpListener;
 
         // Files this program writes under %TEMP% during a session (the map
         // HTML buttonShowMap_Click opens in the browser, and the WWFF .xls
@@ -225,6 +240,16 @@ namespace PotaActivatorParkActivations
         {
             InitializeComponent();
             ConfigureHttpClient();
+
+            // Sourced from Application.ProductVersion (the assembly's
+            // informational version, driven by the .csproj's own <Version> -
+            // see IncludeSourceRevisionInInformationalVersion=false there,
+            // which keeps this a clean "1.7.0" with no git-hash suffix) so
+            // this can never drift out of sync with what's actually built -
+            // same approach already used for the HTTP User-Agent below, and
+            // the same "{ProgramName} v{version}" convention as
+            // HamProgramAutoUpdate's own window title.
+            Text = $"{Text} v{Application.ProductVersion}";
         }
 
         private void ConfigureHttpClient()
@@ -311,6 +336,7 @@ namespace PotaActivatorParkActivations
             SystemEvents.UserPreferenceChanged += SystemEvents_UserPreferenceChanged;
             FormClosed += (s, e) => SystemEvents.UserPreferenceChanged -= SystemEvents_UserPreferenceChanged;
             FormClosed += (s, e) => CleanUpTempFiles();
+            FormClosed += (s, e) => StopMapServer();
 
             comboBoxState.SelectedIndexChanged += ComboBoxState_SelectedIndexChanged;
             UpdateButtonStates();
@@ -583,6 +609,83 @@ namespace PotaActivatorParkActivations
                     // e.g. a browser still has the map file open/locked.
                 }
             }
+        }
+
+        // Starts (or restarts) a loopback-only HTTP listener serving html at
+        // "/", and returns its URL. See _mapHttpListener for why this exists
+        // instead of just opening a file:// temp file.
+        private string StartMapServer(string html)
+        {
+            StopMapServer();
+
+            int port;
+            using (var portProbe = new TcpListener(IPAddress.Loopback, 0))
+            {
+                portProbe.Start();
+                port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+            }
+
+            var listener = new HttpListener();
+            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            listener.Start();
+            _mapHttpListener = listener;
+
+            Task.Run(() => RunMapServer(listener, html));
+
+            return $"http://127.0.0.1:{port}/";
+        }
+
+        // Runs on a background task for as long as listener is listening,
+        // serving the same map html to every request (including e.g. the
+        // browser's favicon.ico probe - harmless, and not worth special-
+        // casing). Exits once StopMapServer() calls listener.Stop(), which
+        // makes the pending GetContext() throw.
+        private static void RunMapServer(HttpListener listener, string html)
+        {
+            byte[] body = Encoding.UTF8.GetBytes(html);
+            while (listener.IsListening)
+            {
+                HttpListenerContext context;
+                try
+                {
+                    context = listener.GetContext();
+                }
+                catch
+                {
+                    return;
+                }
+
+                try
+                {
+                    context.Response.ContentType = "text/html; charset=utf-8";
+                    context.Response.ContentLength64 = body.Length;
+                    context.Response.OutputStream.Write(body, 0, body.Length);
+                }
+                catch
+                {
+                    // Best-effort - a browser tab closing mid-request isn't
+                    // worth reporting.
+                }
+                finally
+                {
+                    context.Response.OutputStream.Close();
+                }
+            }
+        }
+
+        private void StopMapServer()
+        {
+            if (_mapHttpListener == null) return;
+            try
+            {
+                _mapHttpListener.Stop();
+                _mapHttpListener.Close();
+            }
+            catch
+            {
+                // Best-effort, same as CleanUpTempFiles.
+            }
+            _mapHttpListener = null;
         }
 
         // Colors a button Kelly Green with white text when it's the natural next
@@ -1287,14 +1390,12 @@ namespace PotaActivatorParkActivations
                 }).ToList();
 
                 string html = MapService.BuildMapHtml(mapParks, BuildBoundaryLayerDtos(), mapSotaSummits);
-                string tempPath = Path.Combine(GetAppTempFolder(), "POTAActivatorParkActivations_Map_" + Guid.NewGuid().ToString("N") + ".html");
-                File.WriteAllText(tempPath, html, Encoding.UTF8);
-                _tempFilesToCleanUp.Add(tempPath);
                 _lastMapHtml = html;
 
+                string url = StartMapServer(html);
                 var psi = new ProcessStartInfo
                 {
-                    FileName = tempPath,
+                    FileName = url,
                     UseShellExecute = true
                 };
                 Process.Start(psi);
