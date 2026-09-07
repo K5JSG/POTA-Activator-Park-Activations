@@ -202,6 +202,9 @@ namespace PotaActivatorParkActivations
     text-align: center; cursor: pointer; user-select: none; font-size: 10px;
   }
   .layer-tree-children { margin-left: 16px; }
+  .recenter-control a { color: #1a73e8; }
+  .recenter-control a svg { vertical-align: -4px; }
+  .recenter-control a.waiting { opacity: 0.5; cursor: wait; }
   @media (prefers-color-scheme: dark) {
     body { background: #1e1e1e; }
     .legend {
@@ -607,14 +610,58 @@ if (bounds.length > 0) {
   map.setView([39.8, -98.6], 4); // fallback: center of the continental US
 }
 
-// Live ""you are here"" marker from the browser's Geolocation API. Purely
+// Live ""you are here"" marker from the browser's Geolocation API, plus a
+// bottom-right button that flies back to it on demand. Both purely
 // best-effort - if there's no location hardware, the browser/OS location
 // permission is denied, or this is opened in a context that doesn't allow
 // it, locationerror just fires and the map works exactly as it did before,
-// with no marker.
+// with no marker and a button that quietly does nothing.
 var youMarker = null;
 var youAccuracyCircle = null;
 var youLocatedOnce = false;
+var recenterButton = null;
+
+// Set when the button is clicked before any fix has arrived yet - resolved
+// (flown to) by the next onLocationFound instead of requesting a second,
+// one-off fix that would race the continuous watch started below.
+var pendingRecenter = false;
+
+function recenterOnMe() {
+  if (youMarker) {
+    map.flyTo(youMarker.getLatLng(), Math.max(map.getZoom(), 14));
+  } else {
+    pendingRecenter = true;
+    recenterButton.classList.add('waiting');
+    recenterButton.title = 'Waiting for your location...';
+  }
+}
+
+var RecenterControl = L.Control.extend({
+  options: { position: 'bottomright' },
+  onAdd: function () {
+    var container = L.DomUtil.create('div', 'leaflet-bar recenter-control');
+    L.DomEvent.disableClickPropagation(container);
+
+    var button = L.DomUtil.create('a', '', container);
+    button.href = '#';
+    button.title = 'Center on my location';
+    button.innerHTML =
+      '<svg width=""18"" height=""18"" viewBox=""0 0 18 18"" xmlns=""http://www.w3.org/2000/svg"">' +
+      '<circle cx=""9"" cy=""9"" r=""2.5"" fill=""currentColor""/>' +
+      '<path d=""M9 1v3M9 14v3M1 9h3M14 9h3"" stroke=""currentColor"" stroke-width=""1.6"" stroke-linecap=""round""/>' +
+      '</svg>';
+
+    L.DomEvent.on(button, 'click', function (e) {
+      L.DomEvent.preventDefault(e);
+      recenterOnMe();
+    });
+
+    recenterButton = button;
+    return container;
+  }
+});
+
+map.addControl(new RecenterControl());
 
 function onLocationFound(e) {
   if (!youMarker) {
@@ -628,6 +675,13 @@ function onLocationFound(e) {
   } else {
     youMarker.setLatLng(e.latlng);
     youAccuracyCircle.setLatLng(e.latlng).setRadius(e.accuracy);
+  }
+
+  if (pendingRecenter) {
+    pendingRecenter = false;
+    recenterButton.classList.remove('waiting');
+    recenterButton.title = 'Center on my location';
+    map.flyTo(e.latlng, Math.max(map.getZoom(), 14));
   }
 
   // Only nudge the view on the very first fix, and only if it's not already
@@ -644,7 +698,14 @@ function onLocationFound(e) {
 }
 
 function onLocationError() {
-  // Nothing to show, and not worth interrupting the user about.
+  // Nothing to show, and not worth interrupting the user about - but a
+  // pending button click shouldn't be left waiting forever on a fix that
+  // isn't coming (e.g. permission denied), so it's cleared here too.
+  if (recenterButton) {
+    recenterButton.classList.remove('waiting');
+    recenterButton.title = 'Center on my location';
+  }
+  pendingRecenter = false;
 }
 
 map.on('locationfound', onLocationFound);
