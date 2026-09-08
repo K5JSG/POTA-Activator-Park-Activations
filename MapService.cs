@@ -205,10 +205,13 @@ namespace PotaActivatorParkActivations
   .recenter-control a { color: #1a73e8; }
   .recenter-control a svg { vertical-align: -4px; }
   .recenter-control a.waiting { opacity: 0.5; cursor: wait; }
-  .gps-status {
-    position: absolute; bottom: 24px; right: 12px; z-index: 1000;
-    background: white; padding: 6px 10px; border-radius: 6px;
-    box-shadow: 0 1px 5px rgba(0,0,0,0.4); font-size: 12px;
+  /* GPS status lives inside .legend below (bottom-left), not as its own
+     floating box - specifically so it can never end up sitting on top of
+     the location marker the way a fixed-corner overlay could when your
+     real position happens to fall near that same screen corner. */
+  .legend-gps {
+    margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(0,0,0,0.15);
+    font-size: 12px; opacity: 0.85;
   }
   @media (prefers-color-scheme: dark) {
     body { background: #1e1e1e; }
@@ -226,7 +229,7 @@ namespace PotaActivatorParkActivations
     }
     .leaflet-control-layers-separator { border-color: #555; }
     .layer-swatch { border-color: rgba(255,255,255,0.4); }
-    .gps-status { background: #2d2d30; color: #e8e8e8; box-shadow: 0 1px 5px rgba(0,0,0,0.6); }
+    .legend-gps { border-top-color: rgba(255,255,255,0.15); }
   }
 </style>
 </head>
@@ -238,8 +241,8 @@ namespace PotaActivatorParkActivations
   <div><span class=""legend-swatch"" style=""background:#2E8B22;""></span>Activated by me</div>
   <div><span class=""legend-swatch"" style=""background:#1a73e8;""></span>Your location</div>
   <div><span class=""legend-swatch"" style=""background:#8B4513;""></span>SOTA summit (toggle at top-left)</div>
+  <div class=""legend-gps"" id=""gpsStatus"" hidden></div>
 </div>
-<div class=""gps-status"" id=""gpsStatus"" hidden></div>
 
 <script src=""https://unpkg.com/leaflet@1.9.4/dist/leaflet.js""></script>
 <script>
