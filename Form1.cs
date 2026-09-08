@@ -356,6 +356,37 @@ namespace PotaActivatorParkActivations
             comboBoxState.SelectedIndexChanged += ComboBoxState_SelectedIndexChanged;
             UpdateButtonStates();
             UpdateWwffDateText(WwffUpdateService.LoadInfoFile(GetWritableAppDataFolder()));
+
+            // flowLayoutPanelButtons.Height only changes when narrowing the
+            // window makes it wrap the action buttons onto more lines - see
+            // its designer comment. Nothing else on the form reflows around
+            // a sibling control growing taller on its own, so everything
+            // below it is repositioned by hand here whenever that happens.
+            flowLayoutPanelButtons.SizeChanged += (s, e) => RepositionBelowButtonRow();
+            RepositionBelowButtonRow();
+        }
+
+        // Original single-row bottom edge of the button row, as laid out in
+        // the designer (buttonLoadParks etc: Top 39 + Height 25) - the
+        // reference point RepositionBelowButtonRow measures extra wrapped
+        // height against, so at that original single-row height everything
+        // below ends up exactly where the designer already put it.
+        private const int OriginalButtonRowBottom = 64;
+
+        // Shifts every control below the button row down by however much
+        // taller flowLayoutPanelButtons has gotten from wrapping buttons
+        // onto additional lines (or back up when it un-wraps), so nothing
+        // ends up overlapping it. Each Top here is that control's own
+        // original designer Y position - only the shift amount changes.
+        private void RepositionBelowButtonRow()
+        {
+            int extra = Math.Max(0, flowLayoutPanelButtons.Bottom - OriginalButtonRowBottom);
+
+            textBoxWwffDate.Top = 70 + extra;
+            labelSearch.Top = 75 + extra;
+            textBoxSearch.Top = 72 + extra;
+            progressBar1.Top = 105 + extra;
+            dataGridView1.Top = 150 + extra;
         }
 
         // DataGridView's column/row headers don't automatically follow the
@@ -1567,7 +1598,14 @@ namespace PotaActivatorParkActivations
 
         private static MapGeoFeatureDto BuildAreaFeatureDto(FerLookupService.BoundaryFeature boundary)
         {
-            var dto = new MapGeoFeatureDto { Name = boundary.Name };
+            var dto = new MapGeoFeatureDto
+            {
+                Name = boundary.Name,
+                MinLon = boundary.MinLon,
+                MinLat = boundary.MinLat,
+                MaxLon = boundary.MaxLon,
+                MaxLat = boundary.MaxLat
+            };
             foreach (var part in boundary.Polys)
             {
                 var rings = new List<double[][]>();
@@ -1580,7 +1618,14 @@ namespace PotaActivatorParkActivations
 
         private static MapGeoFeatureDto BuildTrailFeatureDto(FerLookupService.TrailRoute trail)
         {
-            var dto = new MapGeoFeatureDto { Name = trail.Name };
+            var dto = new MapGeoFeatureDto
+            {
+                Name = trail.Name,
+                MinLon = trail.MinLon,
+                MinLat = trail.MinLat,
+                MaxLon = trail.MaxLon,
+                MaxLat = trail.MaxLat
+            };
             foreach (var flatLine in trail.Lines)
                 dto.Geometry.Add(new List<double[][]> { FlatToPoints(flatLine) });
             return dto;
