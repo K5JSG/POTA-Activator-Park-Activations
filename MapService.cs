@@ -205,6 +205,11 @@ namespace PotaActivatorParkActivations
   .recenter-control a { color: #1a73e8; }
   .recenter-control a svg { vertical-align: -4px; }
   .recenter-control a.waiting { opacity: 0.5; cursor: wait; }
+  .gps-status {
+    position: absolute; bottom: 24px; right: 12px; z-index: 1000;
+    background: white; padding: 6px 10px; border-radius: 6px;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.4); font-size: 12px;
+  }
   @media (prefers-color-scheme: dark) {
     body { background: #1e1e1e; }
     .legend {
@@ -221,6 +226,7 @@ namespace PotaActivatorParkActivations
     }
     .leaflet-control-layers-separator { border-color: #555; }
     .layer-swatch { border-color: rgba(255,255,255,0.4); }
+    .gps-status { background: #2d2d30; color: #e8e8e8; box-shadow: 0 1px 5px rgba(0,0,0,0.6); }
   }
 </style>
 </head>
@@ -233,6 +239,7 @@ namespace PotaActivatorParkActivations
   <div><span class=""legend-swatch"" style=""background:#1a73e8;""></span>Your location</div>
   <div><span class=""legend-swatch"" style=""background:#8B4513;""></span>SOTA summit (toggle at top-left)</div>
 </div>
+<div class=""gps-status"" id=""gpsStatus"" hidden></div>
 
 <script src=""https://unpkg.com/leaflet@1.9.4/dist/leaflet.js""></script>
 <script>
@@ -621,6 +628,25 @@ var youAccuracyCircle = null;
 var youLocatedOnce = false;
 var recenterButton = null;
 
+// Bottom-right readout showing whether the browser is actually receiving
+// fresh position fixes and how far off they're expected to be - the ""you
+// are here"" dot alone can't distinguish a genuinely stalled GPS from one
+// that's just not moving because a real device isn't moving. This ticks
+// once a second so a fix that stops arriving (e.g. Windows/the browser
+// falls back to a static Wi-Fi-based location) shows growing as ""updated
+// Xs ago"" instead of silently looking current forever.
+var gpsStatusEl = document.getElementById('gpsStatus');
+var lastFixTimestamp = null;
+var lastFixAccuracy = null;
+
+function updateGpsStatusText() {
+  if (!gpsStatusEl || lastFixTimestamp === null) return;
+  var seconds = Math.max(0, Math.round((Date.now() - lastFixTimestamp) / 1000));
+  var ago = seconds < 60 ? (seconds + 's ago') : (Math.round(seconds / 60) + 'm ago');
+  gpsStatusEl.textContent = 'GPS: ±' + Math.round(lastFixAccuracy) + ' m, updated ' + ago;
+}
+setInterval(updateGpsStatusText, 1000);
+
 // Set when the button is clicked before any fix has arrived yet - resolved
 // (flown to) by the next onLocationFound instead of requesting a second,
 // one-off fix that would race the continuous watch started below.
@@ -664,16 +690,23 @@ var RecenterControl = L.Control.extend({
 map.addControl(new RecenterControl());
 
 function onLocationFound(e) {
+  lastFixTimestamp = e.timestamp || Date.now();
+  lastFixAccuracy = e.accuracy;
+  if (gpsStatusEl) gpsStatusEl.hidden = false;
+  updateGpsStatusText();
+
+  var popupHtml = 'Your location (±' + Math.round(e.accuracy) + ' m)';
+
   if (!youMarker) {
     youMarker = L.circleMarker(e.latlng, {
       radius: 8, weight: 3, color: '#ffffff', opacity: 1,
       fillColor: '#1a73e8', fillOpacity: 1
-    }).addTo(map).bindPopup('Your location');
+    }).addTo(map).bindPopup(popupHtml);
     youAccuracyCircle = L.circle(e.latlng, {
       radius: e.accuracy, weight: 1, color: '#1a73e8', fillColor: '#1a73e8', fillOpacity: 0.1
     }).addTo(map);
   } else {
-    youMarker.setLatLng(e.latlng);
+    youMarker.setLatLng(e.latlng).setPopupContent(popupHtml);
     youAccuracyCircle.setLatLng(e.latlng).setRadius(e.accuracy);
   }
 
@@ -697,10 +730,17 @@ function onLocationFound(e) {
   }
 }
 
-function onLocationError() {
-  // Nothing to show, and not worth interrupting the user about - but a
-  // pending button click shouldn't be left waiting forever on a fix that
-  // isn't coming (e.g. permission denied), so it's cleared here too.
+function onLocationError(e) {
+  // Not worth interrupting the user with a popup about, but shown in the
+  // gpsStatus readout (see its declaration above) so a permission-denied /
+  // unavailable / timed-out failure is visible instead of silently looking
+  // like the map is just waiting on a first fix forever. A pending button
+  // click also shouldn't be left waiting forever on a fix that isn't
+  // coming, so it's cleared here too.
+  if (gpsStatusEl) {
+    gpsStatusEl.hidden = false;
+    gpsStatusEl.textContent = 'GPS: ' + (e && e.message ? e.message : 'location unavailable');
+  }
   if (recenterButton) {
     recenterButton.classList.remove('waiting');
     recenterButton.title = 'Center on my location';
@@ -710,7 +750,11 @@ function onLocationError() {
 
 map.on('locationfound', onLocationFound);
 map.on('locationerror', onLocationError);
-map.locate({ watch: true, setView: false, enableHighAccuracy: true, maximumAge: 10000 });
+// maximumAge: 0 forces every fix to be freshly resolved rather than
+// possibly reusing a cached one - important for watch mode specifically,
+// where a reused cached fix would otherwise look like ""the dot stopped
+// updating"" even though the browser/OS location provider is still running.
+map.locate({ watch: true, setView: false, enableHighAccuracy: true, maximumAge: 0 });
 </script>
 </body>
 </html>";

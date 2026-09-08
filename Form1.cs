@@ -337,6 +337,12 @@ namespace PotaActivatorParkActivations
             FormClosed += (s, e) => SystemEvents.UserPreferenceChanged -= SystemEvents_UserPreferenceChanged;
             FormClosed += (s, e) => CleanUpTempFiles();
             FormClosed += (s, e) => StopMapServer();
+            // _strikeFont/_gridToolTip/_gridCopyMenu are constructed via field
+            // initializers, which run before InitializeComponent creates the
+            // designer's `components` container - so they're never in it and
+            // never auto-disposed by the generated Dispose(bool) override.
+            // Disposed by hand here instead, same pattern as the cleanup above.
+            FormClosed += (s, e) => { _strikeFont?.Dispose(); _gridToolTip.Dispose(); _gridCopyMenu.Dispose(); };
 
             comboBoxState.SelectedIndexChanged += ComboBoxState_SelectedIndexChanged;
             UpdateButtonStates();
@@ -1688,7 +1694,12 @@ namespace PotaActivatorParkActivations
                     bool matchGrid = p.Grid != null && p.Grid.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0;
                     bool matchFers = p.Fers != null && p.Fers.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0;
 
-                    // Added criteria rule to scan state code values
+                    // The loaded list can carry out-of-state rows (an ADIF-found
+                    // park, or a national trail's own anchor point - see
+                    // buttonLoadAdif_Click/buttonLoadParks_Click) whose State is
+                    // the only field that tells them apart - without this, typing
+                    // a state code wouldn't find them the way it finds everything
+                    // else by name/county/etc.
                     bool matchState = p.State != null && p.State.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0;
 
                     if (matchRef || matchName || matchCounty || matchGrid || matchFers || matchState)

@@ -259,7 +259,14 @@ namespace PotaActivatorParkActivations
                 // popular parks could have more than 250 all-time activations, in which
                 // case this number would be a "250+" style undercount.
                 string url = ActivationsUrlBase + Uri.EscapeDataString(reference) + "?count=250";
-                string json = await http.GetStringAsync(url);
+                // Same "don't let one slow/hung request eat HttpClient's full
+                // 100s default" reasoning as every other network call in this
+                // file - this one's called once per park (up to 6 at a time,
+                // see FetchActivationInfoAsync below), so a single stuck
+                // request would otherwise slow the whole batch far more than
+                // its already-tolerant catch-and-continue behavior intends.
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(15));
+                string json = await http.GetStringAsync(url, cts.Token);
                 using var doc = JsonDocument.Parse(json);
 
                 if (doc.RootElement.ValueKind == JsonValueKind.Array)
@@ -356,7 +363,12 @@ namespace PotaActivatorParkActivations
             try
             {
                 string url = ParkInfoUrlBase + Uri.EscapeDataString(reference);
-                string json = await http.GetStringAsync(url);
+                // Same reasoning as GetActivationInfoAsync above - one park per
+                // call, up to 6 concurrent (see FetchBoatAccessOnlyAsync), so a
+                // hung request shouldn't get the full 100s default before this
+                // method's own catch-and-continue behavior can kick in.
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(15));
+                string json = await http.GetStringAsync(url, cts.Token);
                 using var doc = JsonDocument.Parse(json);
                 if (doc.RootElement.TryGetProperty("accessMethods", out var value) && value.ValueKind == JsonValueKind.String)
                     return value.GetString() ?? "";
@@ -421,22 +433,24 @@ namespace PotaActivatorParkActivations
         }
 
         // Determines Boat Access Only for a whole list of parks, preferring a
-        // local cache so this works fully offline once a park's been looked
-        // up at least once before. Unlike the other data this app caches (KFF,
-        // boundaries, the park list itself), there's no weekly re-check here -
-        // a park's real-world access method essentially never changes, so an
-        // existing cache entry is treated as good permanently, not just for a
-        // week. Only two things cause a (re-)lookup:
-        //   - A park with NO cache entry at all - new to this cache, most
-        //     often because it's new to POTA.
-        //   - You manually correcting it in the grid (see
-        //     DataGridView1_CellValueChanged/_boatAccessOnlyOverrides) - that
-        //     takes precedence over the cache from then on, for exactly the
-        //     rare real change (a bridge washes out, POTA fixes a bad tag)
-        //     this permanent caching would otherwise miss.
+        // local cache (AccessMethods.cache.csv) so this works fully offline
+        // once a park's been looked up at least once before. Unlike the
+        // other data this app caches (KFF, boundaries, the park list
+        // itself), there's no weekly re-check here - a park's real-world
+        // access method essentially never changes, so an existing cache
+        // entry is treated as good permanently, not just for a week. The
+        // only thing that causes a (re-)lookup is a park with NO cache
+        // entry at all - new to this cache, most often because it's new to
+        // POTA.
         // A lookup that fails (offline, etc.) leaves any existing cache entry
         // alone rather than treating it as "unknown" - only a park that's
         // NEVER been successfully looked up ends up unknown while offline.
+        // Separate from this cache entirely: Form1's _boatAccessOnlyOverrides
+        // (BoatAccessOnlyParks.csv, hand-edited - the grid itself is
+        // read-only, there's no in-app way to toggle this) is layered on top
+        // of whatever this method returns, for the rare real change (a
+        // bridge washes out, POTA fixes a bad tag) this permanent caching
+        // would otherwise miss.
         public static async Task<Dictionary<string, bool>> FetchBoatAccessOnlyAsync(
             HttpClient http, List<ParkRecord> parks, string cacheFolder, IProgress<int> progress)
         {
