@@ -26,6 +26,7 @@
             buttonExportExcel = new Button();
             buttonShowMap = new Button();
             buttonSaveMap = new Button();
+            flowLayoutPanelButtons = new FlowLayoutPanel();
             textBoxWwffDate = new TextBox();
             progressBar1 = new ProgressBar();
             textBoxStatus = new TextBox();
@@ -75,50 +76,50 @@
             comboBoxState.Name = "comboBoxState";
             comboBoxState.Size = new Size(200, 24);
             comboBoxState.TabIndex = 8;
-            // 
+            //
             // buttonLoadParks
-            // 
-            buttonLoadParks.Location = new Point(265, 39);
+            //
+            buttonLoadParks.Margin = new Padding(0, 0, 10, 10);
             buttonLoadParks.Name = "buttonLoadParks";
             buttonLoadParks.Size = new Size(150, 25);
             buttonLoadParks.TabIndex = 7;
             buttonLoadParks.Text = "Load Parks for State";
             buttonLoadParks.UseVisualStyleBackColor = true;
             buttonLoadParks.Click += buttonLoadParks_Click;
-            // 
+            //
             // buttonLoadAdif
-            // 
-            buttonLoadAdif.Location = new Point(425, 39);
+            //
+            buttonLoadAdif.Margin = new Padding(0, 0, 10, 10);
             buttonLoadAdif.Name = "buttonLoadAdif";
             buttonLoadAdif.Size = new Size(150, 25);
             buttonLoadAdif.TabIndex = 6;
             buttonLoadAdif.Text = "Load ADIF File...";
             buttonLoadAdif.UseVisualStyleBackColor = true;
             buttonLoadAdif.Click += buttonLoadAdif_Click;
-            // 
+            //
             // buttonExportCsv
-            // 
-            buttonExportCsv.Location = new Point(585, 39);
+            //
+            buttonExportCsv.Margin = new Padding(0, 0, 10, 10);
             buttonExportCsv.Name = "buttonExportCsv";
             buttonExportCsv.Size = new Size(150, 25);
             buttonExportCsv.TabIndex = 5;
             buttonExportCsv.Text = "Export CSV...";
             buttonExportCsv.UseVisualStyleBackColor = true;
             buttonExportCsv.Click += buttonExportCsv_Click;
-            // 
+            //
             // buttonExportExcel
-            // 
-            buttonExportExcel.Location = new Point(745, 39);
+            //
+            buttonExportExcel.Margin = new Padding(0, 0, 10, 10);
             buttonExportExcel.Name = "buttonExportExcel";
             buttonExportExcel.Size = new Size(150, 25);
             buttonExportExcel.TabIndex = 4;
             buttonExportExcel.Text = "Export Excel...";
             buttonExportExcel.UseVisualStyleBackColor = true;
             buttonExportExcel.Click += buttonExportExcel_Click;
-            // 
+            //
             // buttonShowMap
-            // 
-            buttonShowMap.Location = new Point(901, 40);
+            //
+            buttonShowMap.Margin = new Padding(0, 0, 10, 10);
             buttonShowMap.Name = "buttonShowMap";
             buttonShowMap.Size = new Size(150, 25);
             buttonShowMap.TabIndex = 3;
@@ -129,13 +130,41 @@
             // buttonSaveMap
             //
             buttonSaveMap.Enabled = false;
-            buttonSaveMap.Location = new Point(1061, 40);
+            buttonSaveMap.Margin = new Padding(0, 0, 10, 10);
             buttonSaveMap.Name = "buttonSaveMap";
             buttonSaveMap.Size = new Size(150, 25);
             buttonSaveMap.TabIndex = 2;
             buttonSaveMap.Text = "Save Map...";
             buttonSaveMap.UseVisualStyleBackColor = true;
             buttonSaveMap.Click += buttonSaveMap_Click;
+            //
+            // flowLayoutPanelButtons
+            //
+            // Wraps the action buttons onto additional lines instead of
+            // clipping them or forcing a horizontal scrollbar when the
+            // window (or the screen it's on) is narrower than one row
+            // needs. Anchor stretches its width with the form; AutoSize +
+            // WrapContents grows its height as buttons wrap to more rows.
+            // Form1.cs's RepositionBelowButtonRow keeps every control below
+            // it (search box, WWFF date, progress bar, the grid) from
+            // overlapping as that height changes - plain Anchor alone only
+            // handles a control's own position/size relative to the form's
+            // edges, not reflowing around a sibling that grew taller.
+            flowLayoutPanelButtons.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            flowLayoutPanelButtons.AutoSize = true;
+            flowLayoutPanelButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            flowLayoutPanelButtons.Controls.Add(buttonLoadParks);
+            flowLayoutPanelButtons.Controls.Add(buttonLoadAdif);
+            flowLayoutPanelButtons.Controls.Add(buttonExportCsv);
+            flowLayoutPanelButtons.Controls.Add(buttonExportExcel);
+            flowLayoutPanelButtons.Controls.Add(buttonShowMap);
+            flowLayoutPanelButtons.Controls.Add(buttonSaveMap);
+            flowLayoutPanelButtons.Location = new Point(265, 36);
+            flowLayoutPanelButtons.Margin = new Padding(0);
+            flowLayoutPanelButtons.Name = "flowLayoutPanelButtons";
+            flowLayoutPanelButtons.Size = new Size(1183, 31);
+            flowLayoutPanelButtons.TabIndex = 13;
+            flowLayoutPanelButtons.WrapContents = true;
             //
             // textBoxWwffDate
             //
@@ -153,9 +182,10 @@
             textBoxWwffDate.TabIndex = 12;
             textBoxWwffDate.TabStop = false;
             textBoxWwffDate.Text = "WWFF data: not loaded";
-            // 
+            //
             // progressBar1
-            // 
+            //
+            progressBar1.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             progressBar1.Location = new Point(12, 105);
             progressBar1.Name = "progressBar1";
             progressBar1.Size = new Size(1436, 15);
@@ -214,32 +244,29 @@
             //
             // Form1
             //
-            // Width (both here and MinimumSize below) is sized so the grid
-            // never needs a horizontal scrollbar to see every column,
-            // including colState (hidden most of the time, but shown for a
-            // state with an out-of-state/multi-state Xfer - see
-            // buttonLoadParks_Click) - not just at this default size, but at
-            // the smallest size the window can be resized down to, so it
-            // holds regardless of which state is loaded or how the window
-            // gets resized.
+            // Default size still comfortably fits the grid's columns
+            // (including colState - hidden most of the time, but shown for
+            // a state with an out-of-state/multi-state Xfer, see
+            // buttonLoadParks_Click) with no horizontal scrollbar. Unlike
+            // before, MinimumSize below no longer has to stay this wide
+            // just to keep the button row from clipping - flowLayoutPanelButtons
+            // wraps buttons onto more lines instead, so the window (and the
+            // grid) can shrink much further for a smaller screen; the grid
+            // may need its own horizontal scrollbar at the very smallest
+            // sizes, which is an acceptable trade-off there.
             ClientSize = new Size(1460, 639);
             Controls.Add(dataGridView1);
             Controls.Add(textBoxStatus);
             Controls.Add(progressBar1);
             Controls.Add(textBoxWwffDate);
-            Controls.Add(buttonSaveMap);
-            Controls.Add(buttonShowMap);
-            Controls.Add(buttonExportExcel);
-            Controls.Add(buttonExportCsv);
-            Controls.Add(buttonLoadAdif);
-            Controls.Add(buttonLoadParks);
+            Controls.Add(flowLayoutPanelButtons);
             Controls.Add(comboBoxState);
             Controls.Add(labelState);
             Controls.Add(labelSearch);
             Controls.Add(textBoxSearch);
             Controls.Add(menuStrip1);
             MainMenuStrip = menuStrip1;
-            MinimumSize = new Size(1460, 678);
+            MinimumSize = new Size(600, 500);
             Name = "Form1";
             Text = "POTA Activator Park Activations";
             Load += Form1_Load;
@@ -261,6 +288,7 @@
         private System.Windows.Forms.Button buttonExportExcel;
         private System.Windows.Forms.Button buttonShowMap;
         private System.Windows.Forms.Button buttonSaveMap;
+        private System.Windows.Forms.FlowLayoutPanel flowLayoutPanelButtons;
         private System.Windows.Forms.TextBox textBoxWwffDate;
         private System.Windows.Forms.ProgressBar progressBar1;
         private System.Windows.Forms.TextBox textBoxStatus;

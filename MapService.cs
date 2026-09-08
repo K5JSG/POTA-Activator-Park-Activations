@@ -128,6 +128,22 @@ namespace PotaActivatorParkActivations
         // so the map's JS has a single rendering code path for both.
         [JsonPropertyName("geometry")]
         public List<List<double[][]>> Geometry { get; set; } = new();
+
+        // Mirrors FerLookupService.BoundaryFeature/TrailRoute's own
+        // Min/Max fields - a cheap reject before the real point-in-polygon
+        // (or point-near-trail) math for the ""am I in/near this park right
+        // now"" live GPS check (see MapService's InfoBar JS), the same
+        // bounding-box-first pattern that code already uses server-side.
+        // Recomputing these from Geometry in JS on every load would be
+        // redundant work for data already computed once here.
+        [JsonPropertyName("minLon")]
+        public double MinLon { get; set; }
+        [JsonPropertyName("minLat")]
+        public double MinLat { get; set; }
+        [JsonPropertyName("maxLon")]
+        public double MaxLon { get; set; }
+        [JsonPropertyName("maxLat")]
+        public double MaxLat { get; set; }
     }
 
     public static class MapService
@@ -170,10 +186,10 @@ namespace PotaActivatorParkActivations
 <style>
   html, body { margin: 0; padding: 0; height: 100%; font-family: Segoe UI, Arial, sans-serif; }
   #map { position: absolute; top: 0; left: 0; right: 0; bottom: 0; }
-  .legend {
+  .gps-status {
     position: absolute; bottom: 24px; left: 12px; z-index: 1000;
-    background: white; padding: 10px 14px; border-radius: 6px;
-    box-shadow: 0 1px 5px rgba(0,0,0,0.4); font-size: 13px; line-height: 1.6;
+    background: white; padding: 8px 12px; border-radius: 6px;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.4); font-size: 12px;
   }
   .legend-swatch {
     display: inline-block; width: 12px; height: 12px; border-radius: 50%;
@@ -184,14 +200,11 @@ namespace PotaActivatorParkActivations
   .pota-popup .my-line { margin-top: 6px; color: #2e8b22; font-weight: bold; }
   .pota-popup .boat-line { margin-top: 6px; color: #d45500; font-weight: bold; }
   .boundary-popup-layer { margin-top: 2px; font-size: 11px; opacity: 0.7; }
-  .leaflet-control-layers { font-size: 13px; }
-  .leaflet-control-layers-overlays { max-height: 55vh; overflow-y: auto; }
   .layer-swatch {
     display: inline-block; width: 11px; height: 11px;
     margin-right: 6px; vertical-align: middle; border: 1px solid rgba(0,0,0,0.35);
   }
   .layer-count { opacity: 0.6; }
-  .layer-tree-control { padding: 6px 10px; }
   .layer-tree-row {
     display: flex; align-items: center; cursor: pointer;
     padding: 2px 0; white-space: nowrap;
@@ -205,43 +218,94 @@ namespace PotaActivatorParkActivations
   .recenter-control a { color: #1a73e8; }
   .recenter-control a svg { vertical-align: -4px; }
   .recenter-control a.waiting { opacity: 0.5; cursor: wait; }
-  /* GPS status lives inside .legend below (bottom-left), not as its own
-     floating box - specifically so it can never end up sitting on top of
-     the location marker the way a fixed-corner overlay could when your
-     real position happens to fall near that same screen corner. */
-  .legend-gps {
-    margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(0,0,0,0.15);
-    font-size: 12px; opacity: 0.85;
+  .sidebar-toggle {
+    position: absolute; top: 90px; left: 12px; z-index: 1001;
+    background: white; border: none; border-radius: 4px;
+    padding: 8px 10px; font-size: 16px; line-height: 1; cursor: pointer;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.4);
   }
+  .sidebar {
+    position: absolute; top: 90px; left: 12px; bottom: 24px; z-index: 1000;
+    width: 240px; max-width: calc(100vw - 24px);
+    background: white; border-radius: 6px; box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+    overflow-y: auto; font-size: 13px;
+  }
+  .sidebar-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px; font-weight: bold;
+    border-bottom: 1px solid rgba(0,0,0,0.1);
+    position: sticky; top: 0; background: inherit;
+  }
+  .sidebar-header button {
+    background: none; border: none; font-size: 14px; cursor: pointer; color: inherit;
+  }
+  .sidebar-section { padding: 8px 10px; border-bottom: 1px solid rgba(0,0,0,0.08); }
+  .sidebar-section:last-child { border-bottom: none; }
+  .sidebar-section[hidden] { display: none; }
+  .sidebar-heading {
+    font-weight: bold; margin-bottom: 4px; font-size: 11px; opacity: 0.65;
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  .sidebar-row { display: flex; align-items: center; padding: 3px 0; cursor: pointer; white-space: nowrap; }
+  .sidebar-row input { margin: 0 6px 0 0; }
+  .info-bar {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 1002;
+    max-width: min(600px, calc(100vw - 24px));
+    background: white; padding: 8px 16px; border-radius: 6px;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.4); font-size: 13px; line-height: 1.5;
+    text-align: center;
+  }
+  .info-bar.info-bar-active { background: #2e8b22; color: white; font-weight: bold; }
   @media (prefers-color-scheme: dark) {
     body { background: #1e1e1e; }
-    .legend {
-      background: #2d2d30; color: #e8e8e8;
-      box-shadow: 0 1px 5px rgba(0,0,0,0.6);
-    }
+    .gps-status { background: #2d2d30; color: #e8e8e8; box-shadow: 0 1px 5px rgba(0,0,0,0.6); }
+    .info-bar { background: #2d2d30; color: #e8e8e8; box-shadow: 0 1px 5px rgba(0,0,0,0.6); }
+    .info-bar.info-bar-active { background: #2e8b22; color: white; }
     .legend-swatch { border-color: #999; }
     .pota-popup a { color: #6ab0f3; }
     .pota-popup .my-line { color: #6fdc6f; }
     .pota-popup .boat-line { color: #ff9a4d; }
-    .leaflet-control-layers {
+    .layer-swatch { border-color: rgba(255,255,255,0.4); }
+    .sidebar-toggle, .sidebar {
       background: #2d2d30; color: #e8e8e8;
       box-shadow: 0 1px 5px rgba(0,0,0,0.6);
     }
-    .leaflet-control-layers-separator { border-color: #555; }
-    .layer-swatch { border-color: rgba(255,255,255,0.4); }
-    .legend-gps { border-top-color: rgba(255,255,255,0.15); }
+    .sidebar-header { border-bottom-color: rgba(255,255,255,0.15); }
+    .sidebar-section { border-bottom-color: rgba(255,255,255,0.12); }
   }
 </style>
 </head>
 <body>
 <div id=""map""></div>
-<div class=""legend"">
-  <div><span class=""legend-swatch"" style=""background:#FFD500;""></span>Not yet activated by me</div>
-  <div><span class=""legend-swatch"" style=""background:#FF6700;""></span>Boat access only, not yet activated</div>
-  <div><span class=""legend-swatch"" style=""background:#2E8B22;""></span>Activated by me</div>
-  <div><span class=""legend-swatch"" style=""background:#1a73e8;""></span>Your location</div>
-  <div><span class=""legend-swatch"" style=""background:#8B4513;""></span>SOTA summit (toggle at top-left)</div>
-  <div class=""legend-gps"" id=""gpsStatus"" hidden></div>
+<div class=""gps-status"" id=""gpsStatus"" hidden></div>
+<div class=""info-bar"" id=""infoBar"" hidden></div>
+
+<button id=""sidebarToggle"" class=""sidebar-toggle"" title=""Show/hide layers panel"">☰</button>
+<div id=""sidebar"" class=""sidebar"">
+  <div class=""sidebar-header"">
+    <span>Layers</span>
+    <button id=""sidebarClose"" title=""Hide layers panel"">✕</button>
+  </div>
+  <div class=""sidebar-section"">
+    <div class=""sidebar-heading"">Base Map</div>
+    <label class=""sidebar-row""><input type=""radio"" name=""baseLayer"" id=""baseLayerStreet"" checked /> Street</label>
+    <label class=""sidebar-row""><input type=""radio"" name=""baseLayer"" id=""baseLayerSatellite"" /> Satellite</label>
+  </div>
+  <div class=""sidebar-section"">
+    <div class=""sidebar-heading"">Show</div>
+    <label class=""sidebar-row""><input type=""checkbox"" id=""overlayWorked"" checked /> Worked</label>
+    <label class=""sidebar-row""><input type=""checkbox"" id=""overlayNotWorked"" checked /> Not worked</label>
+    <label class=""sidebar-row""><input type=""checkbox"" id=""overlaySota"" /> SOTA Summits</label>
+  </div>
+  <div class=""sidebar-section"" id=""boundaryLayerSection"" hidden></div>
+  <div class=""sidebar-section"">
+    <div class=""sidebar-heading"">Legend</div>
+    <div><span class=""legend-swatch"" style=""background:#FFD500;""></span>Not yet activated by me</div>
+    <div><span class=""legend-swatch"" style=""background:#FF6700;""></span>Boat access only, not yet activated</div>
+    <div><span class=""legend-swatch"" style=""background:#2E8B22;""></span>Activated by me</div>
+    <div><span class=""legend-swatch"" style=""background:#1a73e8;""></span>Your location</div>
+    <div><span class=""legend-swatch"" style=""background:#8B4513;""></span>SOTA summit</div>
+  </div>
 </div>
 
 <script src=""https://unpkg.com/leaflet@1.9.4/dist/leaflet.js""></script>
@@ -507,13 +571,14 @@ function buildTrailGroup(trailEntries, map) {
 
 // Builds every layer's Leaflet objects (area boundaries as filled
 // multi-polygons, trails as multi-line routes - see
-// MapBoundaryLayerDto/MapGeoFeatureDto), then adds a custom control: area
-// layers as flat checkboxes, trails grouped under one collapsible ""Trails""
-// node whose own checkbox turns all of them on/off together, expandable
-// for individual control. Everything starts unchecked/off, same as
-// potamap.us's own default, so a state's full boundary data can be
-// embedded without slowing down or cluttering the initial view - nothing
-// is drawn until its box (or the group box) is checked.
+// MapBoundaryLayerDto/MapGeoFeatureDto), then fills in the sidebar's own
+// boundary section: area layers as flat checkboxes, trails grouped under
+// one collapsible ""Trails"" node whose own checkbox turns all of them
+// on/off together, expandable for individual control. Everything starts
+// unchecked/off, same as potamap.us's own default, so a state's full
+// boundary data can be embedded without slowing down or cluttering the
+// initial view - nothing is drawn until its box (or the group box) is
+// checked.
 function addBoundaryLayers(map) {
   var areaEntries = [];
   var trailEntries = [];
@@ -547,24 +612,21 @@ function addBoundaryLayers(map) {
     (layer.isLine ? trailEntries : areaEntries).push(entry);
   });
 
+  // Left hidden (see its markup) when there's nothing to show - a state
+  // with no matched boundary/trail data shouldn't leave an empty,
+  // pointlessly-bordered section sitting in the sidebar.
   if (areaEntries.length === 0 && trailEntries.length === 0) return;
 
-  var TreeControl = L.Control.extend({
-    options: { position: 'topright' },
-    onAdd: function () {
-      var container = L.DomUtil.create('div', 'leaflet-control-layers layer-tree-control');
-      L.DomEvent.disableClickPropagation(container);
-      L.DomEvent.disableScrollPropagation(container);
+  var section = document.getElementById('boundaryLayerSection');
+  section.hidden = false;
 
-      var list = L.DomUtil.create('div', 'leaflet-control-layers-overlays', container);
-      areaEntries.forEach(function (entry) { list.appendChild(buildLeafRow(entry, map)); });
-      if (trailEntries.length > 0) list.appendChild(buildTrailGroup(trailEntries, map));
+  var heading = document.createElement('div');
+  heading.className = 'sidebar-heading';
+  heading.textContent = 'Park Boundaries';
+  section.appendChild(heading);
 
-      return container;
-    }
-  });
-
-  map.addControl(new TreeControl());
+  areaEntries.forEach(function (entry) { section.appendChild(buildLeafRow(entry, map)); });
+  if (trailEntries.length > 0) section.appendChild(buildTrailGroup(trailEntries, map));
 }
 
 var map = L.map('map');
@@ -588,11 +650,37 @@ var notWorkedLayer = L.layerGroup().addTo(map);
 // as the boundary/trail layers below (addBoundaryLayers).
 var sotaLayer = L.layerGroup();
 
-L.control.layers(
-  { 'Street': streetLayer, 'Satellite': satelliteLayer },
-  { 'Worked': workedLayer, 'Not worked': notWorkedLayer, 'SOTA Summits': sotaLayer },
-  { position: 'topleft', collapsed: false }
-).addTo(map);
+// Base map + overlay toggles, and (below) the sidebar show/hide button -
+// plain HTML in the #sidebar panel instead of Leaflet's own
+// L.control.layers, so it can live alongside the legend and the boundary
+// layer checkboxes (addBoundaryLayers below) in one collapsible place
+// rather than as several separate floating boxes around the map.
+function wireBaseLayerRadio(id, layerToShow, layerToHide) {
+  document.getElementById(id).addEventListener('change', function (e) {
+    if (!e.target.checked) return;
+    map.removeLayer(layerToHide);
+    map.addLayer(layerToShow);
+  });
+}
+wireBaseLayerRadio('baseLayerStreet', streetLayer, satelliteLayer);
+wireBaseLayerRadio('baseLayerSatellite', satelliteLayer, streetLayer);
+
+function wireOverlayCheckbox(id, layer) {
+  document.getElementById(id).addEventListener('change', function (e) {
+    if (e.target.checked) map.addLayer(layer); else map.removeLayer(layer);
+  });
+}
+wireOverlayCheckbox('overlayWorked', workedLayer);
+wireOverlayCheckbox('overlayNotWorked', notWorkedLayer);
+wireOverlayCheckbox('overlaySota', sotaLayer);
+
+var sidebarEl = document.getElementById('sidebar');
+document.getElementById('sidebarToggle').addEventListener('click', function () {
+  sidebarEl.hidden = !sidebarEl.hidden;
+});
+document.getElementById('sidebarClose').addEventListener('click', function () {
+  sidebarEl.hidden = true;
+});
 
 addBoundaryLayers(map);
 
@@ -631,6 +719,16 @@ var youAccuracyCircle = null;
 var youLocatedOnce = false;
 var recenterButton = null;
 
+// A saved, standalone copy of this file (Save Map, opened later via
+// file://) can never get live location, no matter what this script does -
+// browsers only allow navigator.geolocation from a secure context
+// (https:, or the loopback exception the live map's own local server
+// relies on - see Form1.cs's MapServerPort), and file:// doesn't qualify.
+// Checked once up front so that case can show one clear explanation
+// instead of every poll attempt silently failing with a cryptic browser
+// permission error every 10 seconds for no benefit.
+var geoAvailable = window.isSecureContext;
+
 // Bottom-right readout showing whether the browser is actually receiving
 // fresh position fixes and how far off they're expected to be - the ""you
 // are here"" dot alone can't distinguish a genuinely stalled GPS from one
@@ -664,6 +762,12 @@ if (navigator.permissions && navigator.permissions.query) {
 function updateGpsStatusText() {
   if (!gpsStatusEl) return;
 
+  if (!geoAvailable) {
+    gpsStatusEl.hidden = false;
+    gpsStatusEl.textContent = 'GPS: not available in a saved file - use Show Map in the app for live tracking.';
+    return;
+  }
+
   var parts = [];
   if (geoPermissionState) parts.push('permission: ' + geoPermissionState);
   if (lastFixTimestamp !== null) {
@@ -683,8 +787,32 @@ setInterval(updateGpsStatusText, 1000);
 // one-off fix that would race the poll running below.
 var pendingRecenter = false;
 
+// ""Follow me"" mode: once you've pressed the recenter button, later fixes
+// keep the map centered on the dot automatically (like a normal nav app),
+// right up until you drag or zoom the map yourself - at which point it
+// backs off instead of constantly fighting you while you're looking
+// around, matching the same ""don't yank the view around"" philosophy
+// onLocationFound already applies elsewhere. programmaticMove distinguishes
+// ""the view moved because this file just called flyTo/panTo/fitBounds""
+// from ""the view moved because you dragged or zoomed it"" - without it,
+// recenterOnMe's own flyTo (which can include a zoom change, to at least
+// zoom level 14) would immediately flip followMode back off the moment it
+// started, since Leaflet fires the same zoomstart event either way.
+var followMode = false;
+var programmaticMove = false;
+map.on('moveend', function () { programmaticMove = false; });
+map.on('dragstart zoomstart', function () {
+  if (!programmaticMove) followMode = false;
+});
+
 function recenterOnMe() {
+  if (!geoAvailable) {
+    updateGpsStatusText(); // surfaces the ""not available in a saved file"" explanation right away
+    return;
+  }
+  followMode = true;
   if (youMarker) {
+    programmaticMove = true;
     map.flyTo(youMarker.getLatLng(), Math.max(map.getZoom(), 14));
   } else {
     pendingRecenter = true;
@@ -720,11 +848,138 @@ var RecenterControl = L.Control.extend({
 
 map.addControl(new RecenterControl());
 
+// ---- Live ""am I in/near a park right now"" check, per POTA's own
+// activation rules - not the same question the Xfer's grid column
+// answers (whether a PARK'S OWN reported point overlaps another park's
+// boundary); this is about where YOU actually are right now, tested
+// against the real boundary/trail geometry already embedded above
+// (boundaryLayers) - exactly what POTA requires an activator to verify
+// before claiming an overlap or a trail activation, rather than trusting
+// a park's single reported coordinate. Runs on every GPS fix regardless
+// of which sidebar layer checkboxes are currently ticked - this is about
+// accuracy, not what's currently drawn.
+var infoBarEl = document.getElementById('infoBar');
+var TrailCheckToleranceKm = 0.03048; // 100 ft (30.5 m) - POTA's own trail-activation rule, same constant FerLookupService.TrailToleranceKm uses server-side.
+var KmPerDegreeLatCheck = 111.32;
+
+// Same ray-casting parity test as FerLookupService.PointInRing/CountyLookupService.PointInRing.
+function pointInRingCheck(lon, lat, ring) {
+  var inside = false;
+  for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    var xi = ring[i][0], yi = ring[i][1];
+    var xj = ring[j][0], yj = ring[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+
+function isPointInAreaFeature(lon, lat, feature) {
+  if (lon < feature.minLon || lon > feature.maxLon || lat < feature.minLat || lat > feature.maxLat) return false;
+  for (var p = 0; p < feature.geometry.length; p++) {
+    var ringsContaining = 0;
+    var part = feature.geometry[p];
+    for (var r = 0; r < part.length; r++) {
+      if (pointInRingCheck(lon, lat, part[r])) ringsContaining++;
+    }
+    if (ringsContaining % 2 === 1) return true;
+  }
+  return false;
+}
+
+// Same locally-scaled-degree distance math as FerLookupService.PointToSegmentDistanceKm.
+function distancePointToSegmentKm(px, py, ax, ay, bx, by, lonScale) {
+  var axs = ax * lonScale, bxs = bx * lonScale, pxs = px * lonScale;
+  var dx = bxs - axs, dy = by - ay;
+  var t = (dx === 0 && dy === 0) ? 0 : Math.max(0, Math.min(1, ((pxs - axs) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
+  var cx = axs + t * dx, cy = ay + t * dy;
+  var ex = pxs - cx, ey = py - cy;
+  return Math.sqrt(ex * ex + ey * ey) * KmPerDegreeLatCheck;
+}
+
+function isPointNearTrailFeature(lon, lat, feature) {
+  var latPad = TrailCheckToleranceKm / KmPerDegreeLatCheck;
+  var lonScale = Math.max(0.1, Math.cos(lat * Math.PI / 180));
+  var lonPad = TrailCheckToleranceKm / (KmPerDegreeLatCheck * lonScale);
+  if (lon < feature.minLon - lonPad || lon > feature.maxLon + lonPad ||
+      lat < feature.minLat - latPad || lat > feature.maxLat + latPad) return false;
+
+  for (var p = 0; p < feature.geometry.length; p++) {
+    var line = feature.geometry[p][0]; // a trail feature's ""ring"" is really just its own point sequence - see MapGeoFeatureDto.
+    for (var i = 0; i < line.length - 1; i++) {
+      var d = distancePointToSegmentKm(lon, lat, line[i][0], line[i][1], line[i + 1][0], line[i + 1][1], lonScale);
+      if (d <= TrailCheckToleranceKm) return true;
+    }
+  }
+  return false;
+}
+
+function normalizeNameWords(name) {
+  if (!name) return [];
+  var collapsed = name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return collapsed.length === 0 ? [] : collapsed.split(' ').sort();
+}
+
+// Best-effort cross-reference from a boundary/trail feature's own name to
+// its POTA reference, for display only - same word-set-equality idea as
+// FerLookupService.NormalizeName server-side (minus its safe-subset
+// fallback, which isn't worth the false-positive risk here: showing the
+// raw boundary/trail name on a near-miss is still useful, unlike
+// server-side where a wrong Xfer match matters more). Returns null - and
+// callers fall back to the raw feature name - when nothing matches, or
+// more than one park name matches equally (ambiguous).
+function findParkByFeatureName(featureName) {
+  var target = normalizeNameWords(featureName).join(' ');
+  if (!target) return null;
+  var match = null;
+  for (var i = 0; i < parkData.length; i++) {
+    if (normalizeNameWords(parkData[i].name).join(' ') === target) {
+      if (match) return null;
+      match = parkData[i];
+    }
+  }
+  return match;
+}
+
+function formatFeatureLabel(featureName) {
+  var park = findParkByFeatureName(featureName);
+  return park ? (park.reference + ' - ' + featureName) : featureName;
+}
+
+function checkNearbyParks(lat, lon) {
+  if (!infoBarEl) return;
+
+  var insideNames = {};
+  var nearTrailNames = {};
+  boundaryLayers.forEach(function (layer) {
+    layer.features.forEach(function (feature) {
+      if (layer.isLine) {
+        if (isPointNearTrailFeature(lon, lat, feature)) nearTrailNames[feature.name] = true;
+      } else if (isPointInAreaFeature(lon, lat, feature)) {
+        insideNames[feature.name] = true;
+      }
+    });
+  });
+
+  var lines = [];
+  Object.keys(insideNames).forEach(function (n) { lines.push('Inside: ' + formatFeatureLabel(n)); });
+  Object.keys(nearTrailNames).forEach(function (n) { lines.push('Within 100 ft of: ' + formatFeatureLabel(n)); });
+
+  infoBarEl.hidden = false;
+  if (lines.length === 0) {
+    infoBarEl.classList.remove('info-bar-active');
+    infoBarEl.textContent = 'Not currently within any known park boundary or trail.';
+  } else {
+    infoBarEl.classList.add('info-bar-active');
+    infoBarEl.innerHTML = lines.map(escapeHtml).join('<br>');
+  }
+}
+
 function onLocationFound(e) {
   clearLocatePending();
   lastFixTimestamp = e.timestamp || Date.now();
   lastFixAccuracy = e.accuracy;
   updateGpsStatusText();
+  checkNearbyParks(e.latlng.lat, e.latlng.lng);
 
   var popupHtml = 'Your location (±' + Math.round(e.accuracy) + ' m)';
 
@@ -745,17 +1000,27 @@ function onLocationFound(e) {
     pendingRecenter = false;
     recenterButton.classList.remove('waiting');
     recenterButton.title = 'Center on my location';
+    programmaticMove = true;
     map.flyTo(e.latlng, Math.max(map.getZoom(), 14));
+  } else if (followMode) {
+    // Keep the dot centered on every later fix too, not just the one right
+    // after pressing the button - panTo (not flyTo) so this never touches
+    // zoom, only position: a real user zoom is still the only thing that
+    // should change zoom, and panTo alone never fires zoomstart, so it
+    // can't spuriously trip the followMode-cancelling listener above.
+    programmaticMove = true;
+    map.panTo(e.latlng);
   }
 
   // Only nudge the view on the very first fix, and only if it's not already
   // visible - e.g. the parks loaded are for a state you're not currently
-  // standing in. After that, leave the view alone so a later GPS update
-  // (the poll below keeps them coming) never yanks the map out from under
-  // you while you're panning or zooming it.
+  // standing in. After that, leave the view alone (beyond followMode above)
+  // so a later GPS update never yanks the map out from under you while
+  // you're panning or zooming it.
   if (!youLocatedOnce) {
     youLocatedOnce = true;
     if (!map.getBounds().contains(e.latlng)) {
+      programmaticMove = true;
       map.fitBounds(map.getBounds().extend(e.latlng), { padding: [40, 40] });
     }
   }
@@ -780,6 +1045,13 @@ function onLocationError(e) {
   pendingRecenter = false;
 }
 
+// Everything below actually calls navigator.geolocation - skipped
+// entirely when geoAvailable is false (see its declaration above) so a
+// saved file doesn't spend forever retrying a request the browser will
+// never allow to succeed; updateGpsStatusText's own geoAvailable check
+// already keeps the readout showing a clear explanation the whole time.
+if (geoAvailable) {
+
 map.on('locationfound', onLocationFound);
 map.on('locationerror', onLocationError);
 
@@ -800,15 +1072,16 @@ map.on('locationerror', onLocationError);
 // resolved reliably.
 //
 // locatePending guards against firing a new request while one's still
-// outstanding - confirmed necessary, not just theoretical: at a fixed 1s
-// tick with no guard, a real fix here takes longer than 1s to resolve (this
-// OS/browser combination is evidently going through a several-second
+// outstanding - confirmed necessary, not just theoretical: at a tight 1s
+// tick with no guard, a real fix here takes longer than that to resolve
+// (this OS/browser combination is evidently going through a several-second
 // Wi-Fi-based lookup, not an instant GPS read), so a new locate() request
 // was starting on top of the previous unfinished one every tick, and they
 // started timing each other out (""GPS: Geolocation error: Timeout
-// expired"") instead of resolving. Checking every 1s but only actually
-// starting a request when the last one has finished means this polls as
-// fast as a fix can really be produced, whatever that turns out to be.
+// expired"") instead of resolving. Checking on every tick but only
+// actually starting a request when the last one has finished means this
+// still can't pile up requests even at a much shorter interval than the
+// 10s below - it's a correctness guard, not just a battery-saving one.
 //
 // locatePendingTimeoutId is a second, independent safety net on top of
 // that: confirmed directly (via the page's own live state, not just
@@ -837,7 +1110,9 @@ setInterval(function () {
   locatePending = true;
   locatePendingTimeoutId = setTimeout(clearLocatePending, 15000);
   map.locate({ setView: false, enableHighAccuracy: true, maximumAge: 0, timeout: 10000 });
-}, 1000);
+}, 10000);
+
+} // if (geoAvailable)
 </script>
 </body>
 </html>";
