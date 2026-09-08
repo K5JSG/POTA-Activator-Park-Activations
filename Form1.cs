@@ -641,7 +641,20 @@ namespace PotaActivatorParkActivations
 
             Task.Run(() => RunMapServer(listener, html));
 
-            return $"http://127.0.0.1:{MapServerPort}/";
+            // A trailing query string that changes every call, appended only
+            // to the URL handed to the browser (the listener prefix above
+            // stays bare "/" - HttpListener matches any query string under
+            // it, so RunMapServer needs no changes for this). Confirmed
+            // necessary: with the exact same URL every time, opening it
+            // again could just switch focus to whatever tab already had it
+            // open instead of actually reloading - silently leaving that tab
+            // running whatever HTML an earlier click had generated. The
+            // query string forces a real navigation every time while leaving
+            // scheme+host+port (an origin - what the browser actually scopes
+            // the Geolocation permission grant to) untouched, so that
+            // permission still isn't lost the way it was with a changing
+            // port.
+            return $"http://127.0.0.1:{MapServerPort}/?t={DateTime.UtcNow.Ticks}";
         }
 
         // Runs on a background task for as long as listener is listening,

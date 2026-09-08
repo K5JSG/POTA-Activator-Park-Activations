@@ -642,17 +642,45 @@ var gpsStatusEl = document.getElementById('gpsStatus');
 var lastFixTimestamp = null;
 var lastFixAccuracy = null;
 
+// Shown alongside the fix info so a permission problem (blocked, or never
+// answered) is visible on sight instead of looking identical to ""just
+// hasn't gotten a fix yet"" - the two look the same from lastFixTimestamp
+// alone. Queried once up front and kept live via onchange, since Chrome
+// remembers a per-site grant/block permanently once set (via the address
+// bar's padlock, or a past prompt response) - unlike a fix, this can be
+// checked immediately, with no location request needed at all.
+var geoPermissionState = null;
+if (navigator.permissions && navigator.permissions.query) {
+  navigator.permissions.query({ name: 'geolocation' }).then(function (result) {
+    geoPermissionState = result.state;
+    updateGpsStatusText();
+    result.onchange = function () {
+      geoPermissionState = result.state;
+      updateGpsStatusText();
+    };
+  }).catch(function () { /* Permissions API unsupported here - just omitted below. */ });
+}
+
 function updateGpsStatusText() {
-  if (!gpsStatusEl || lastFixTimestamp === null) return;
-  var seconds = Math.max(0, Math.round((Date.now() - lastFixTimestamp) / 1000));
-  var ago = seconds < 60 ? (seconds + 's ago') : (Math.round(seconds / 60) + 'm ago');
-  gpsStatusEl.textContent = 'GPS: ±' + Math.round(lastFixAccuracy) + ' m, updated ' + ago;
+  if (!gpsStatusEl) return;
+
+  var parts = [];
+  if (geoPermissionState) parts.push('permission: ' + geoPermissionState);
+  if (lastFixTimestamp !== null) {
+    var seconds = Math.max(0, Math.round((Date.now() - lastFixTimestamp) / 1000));
+    var ago = seconds < 60 ? (seconds + 's ago') : (Math.round(seconds / 60) + 'm ago');
+    parts.push('±' + Math.round(lastFixAccuracy) + ' m, updated ' + ago);
+  }
+  if (parts.length === 0) return;
+
+  gpsStatusEl.hidden = false;
+  gpsStatusEl.textContent = 'GPS: ' + parts.join(', ');
 }
 setInterval(updateGpsStatusText, 1000);
 
 // Set when the button is clicked before any fix has arrived yet - resolved
 // (flown to) by the next onLocationFound instead of requesting a second,
-// one-off fix that would race the continuous watch started below.
+// one-off fix that would race the poll running below.
 var pendingRecenter = false;
 
 function recenterOnMe() {
@@ -693,10 +721,9 @@ var RecenterControl = L.Control.extend({
 map.addControl(new RecenterControl());
 
 function onLocationFound(e) {
-  locatePending = false;
+  clearLocatePending();
   lastFixTimestamp = e.timestamp || Date.now();
   lastFixAccuracy = e.accuracy;
-  if (gpsStatusEl) gpsStatusEl.hidden = false;
   updateGpsStatusText();
 
   var popupHtml = 'Your location (±' + Math.round(e.accuracy) + ' m)';
@@ -724,8 +751,8 @@ function onLocationFound(e) {
   // Only nudge the view on the very first fix, and only if it's not already
   // visible - e.g. the parks loaded are for a state you're not currently
   // standing in. After that, leave the view alone so a later GPS update
-  // (this keeps watching) never yanks the map out from under you while
-  // you're panning or zooming it.
+  // (the poll below keeps them coming) never yanks the map out from under
+  // you while you're panning or zooming it.
   if (!youLocatedOnce) {
     youLocatedOnce = true;
     if (!map.getBounds().contains(e.latlng)) {
@@ -735,7 +762,7 @@ function onLocationFound(e) {
 }
 
 function onLocationError(e) {
-  locatePending = false;
+  clearLocatePending();
   // Not worth interrupting the user with a popup about, but shown in the
   // gpsStatus readout (see its declaration above) so a permission-denied /
   // unavailable / timed-out failure is visible instead of silently looking
@@ -755,23 +782,22 @@ function onLocationError(e) {
 
 map.on('locationfound', onLocationFound);
 map.on('locationerror', onLocationError);
-// maximumAge: 0 forces every fix to be freshly resolved rather than
-// possibly reusing a cached one - important for watch mode specifically,
-// where a reused cached fix would otherwise look like ""the dot stopped
-// updating"" even though the browser/OS location provider is still running.
-map.locate({ watch: true, setView: false, enableHighAccuracy: true, maximumAge: 0 });
 
-// Backstop for a real, observed Chrome/desktop quirk: navigator.geolocation's
-// watchPosition (what map.locate({watch:true}) above uses internally) can
-// deliver exactly one fix and then silently stop pushing further updates,
-// particularly when the OS is resolving position via a network/Wi-Fi-based
-// provider rather than raw GPS hardware - confirmed against this app's own
-// gpsStatus readout, which kept climbing (""updated Xs ago"" growing without
-// bound) instead of resetting. A plain one-shot map.locate() call (no
-// `watch`) still forces a fresh resolution each time even when the pushed
-// watch has gone quiet, so polling with one of those - reusing the same
-// locationfound/locationerror handlers above - keeps the marker as current
-// as the OS's own location provider allows either way.
+// Deliberately NOT also running map.locate({watch:true}) (a persistent
+// navigator.geolocation.watchPosition subscription) alongside the poll
+// below - confirmed directly, by comparing this page's own repeated
+// one-shot requests against the same test run on a page with no
+// competing geolocation activity at all: this origin, with only the poll
+// below active, resolved fine, while adding a concurrent watchPosition
+// subscription (as this app used to run alongside the poll) made
+// requests here take dramatically longer than the very same code on a
+// page with nothing else calling the geolocation API. Whatever the exact
+// mechanism, running two overlapping geolocation subscriptions on one
+// page was the actual source of the stalls, not the poll's cadence or
+// this origin itself. A single one-shot request every tick - never a
+// second, independent subscription running at the same time - keeps
+// exactly one request outstanding, period, which is what actually
+// resolved reliably.
 //
 // locatePending guards against firing a new request while one's still
 // outstanding - confirmed necessary, not just theoretical: at a fixed 1s
@@ -783,11 +809,34 @@ map.locate({ watch: true, setView: false, enableHighAccuracy: true, maximumAge: 
 // expired"") instead of resolving. Checking every 1s but only actually
 // starting a request when the last one has finished means this polls as
 // fast as a fix can really be produced, whatever that turns out to be.
+//
+// locatePendingTimeoutId is a second, independent safety net on top of
+// that: confirmed directly (via the page's own live state, not just
+// theory) that a locate() call here can occasionally call back neither
+// onLocationFound nor onLocationError at all - it just never resolves -
+// even with an explicit timeout passed below. Without this, that single
+// hung request would leave locatePending stuck true forever, permanently
+// blocking every future tick and silently stopping the readout from ever
+// updating again. Whichever handler does eventually fire clears this
+// timer; if neither ever does, it fires on its own and forces the next
+// tick to try again anyway - a hung request degrades to ""one skipped
+// update"", never ""polling stops for good"".
 var locatePending = false;
+var locatePendingTimeoutId = null;
+
+function clearLocatePending() {
+  locatePending = false;
+  if (locatePendingTimeoutId !== null) {
+    clearTimeout(locatePendingTimeoutId);
+    locatePendingTimeoutId = null;
+  }
+}
+
 setInterval(function () {
   if (locatePending) return;
   locatePending = true;
-  map.locate({ setView: false, enableHighAccuracy: true, maximumAge: 0 });
+  locatePendingTimeoutId = setTimeout(clearLocatePending, 15000);
+  map.locate({ setView: false, enableHighAccuracy: true, maximumAge: 0, timeout: 10000 });
 }, 1000);
 </script>
 </body>
