@@ -693,6 +693,7 @@ var RecenterControl = L.Control.extend({
 map.addControl(new RecenterControl());
 
 function onLocationFound(e) {
+  locatePending = false;
   lastFixTimestamp = e.timestamp || Date.now();
   lastFixAccuracy = e.accuracy;
   if (gpsStatusEl) gpsStatusEl.hidden = false;
@@ -734,6 +735,7 @@ function onLocationFound(e) {
 }
 
 function onLocationError(e) {
+  locatePending = false;
   // Not worth interrupting the user with a popup about, but shown in the
   // gpsStatus readout (see its declaration above) so a permission-denied /
   // unavailable / timed-out failure is visible instead of silently looking
@@ -758,6 +760,35 @@ map.on('locationerror', onLocationError);
 // where a reused cached fix would otherwise look like ""the dot stopped
 // updating"" even though the browser/OS location provider is still running.
 map.locate({ watch: true, setView: false, enableHighAccuracy: true, maximumAge: 0 });
+
+// Backstop for a real, observed Chrome/desktop quirk: navigator.geolocation's
+// watchPosition (what map.locate({watch:true}) above uses internally) can
+// deliver exactly one fix and then silently stop pushing further updates,
+// particularly when the OS is resolving position via a network/Wi-Fi-based
+// provider rather than raw GPS hardware - confirmed against this app's own
+// gpsStatus readout, which kept climbing (""updated Xs ago"" growing without
+// bound) instead of resetting. A plain one-shot map.locate() call (no
+// `watch`) still forces a fresh resolution each time even when the pushed
+// watch has gone quiet, so polling with one of those - reusing the same
+// locationfound/locationerror handlers above - keeps the marker as current
+// as the OS's own location provider allows either way.
+//
+// locatePending guards against firing a new request while one's still
+// outstanding - confirmed necessary, not just theoretical: at a fixed 1s
+// tick with no guard, a real fix here takes longer than 1s to resolve (this
+// OS/browser combination is evidently going through a several-second
+// Wi-Fi-based lookup, not an instant GPS read), so a new locate() request
+// was starting on top of the previous unfinished one every tick, and they
+// started timing each other out (""GPS: Geolocation error: Timeout
+// expired"") instead of resolving. Checking every 1s but only actually
+// starting a request when the last one has finished means this polls as
+// fast as a fix can really be produced, whatever that turns out to be.
+var locatePending = false;
+setInterval(function () {
+  if (locatePending) return;
+  locatePending = true;
+  map.locate({ setView: false, enableHighAccuracy: true, maximumAge: 0 });
+}, 1000);
 </script>
 </body>
 </html>";

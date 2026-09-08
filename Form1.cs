@@ -6,7 +6,6 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -58,6 +57,16 @@ namespace PotaActivatorParkActivations
         // Only one listener runs at a time - StartMapServer stops whatever
         // was already running before starting a new one.
         private HttpListener? _mapHttpListener;
+
+        // Fixed rather than a freshly-probed free port each time (the
+        // original approach) - a browser treats scheme+host+port as one
+        // origin, so a changing port meant every single "Show Map" click (or
+        // even just reloading the tab) looked like a brand-new origin with no
+        // memory of anything granted to the last one, including the
+        // Geolocation permission the "you are here" marker depends on.
+        // Arbitrary high port, chosen only to avoid the common well-known
+        // ones - nothing else on a typical machine should be listening here.
+        private const int MapServerPort = 55743;
 
         // Files this program writes under %TEMP% during a session (the map
         // HTML buttonShowMap_Click opens in the browser, and the WWFF .xls
@@ -619,26 +628,20 @@ namespace PotaActivatorParkActivations
 
         // Starts (or restarts) a loopback-only HTTP listener serving html at
         // "/", and returns its URL. See _mapHttpListener for why this exists
-        // instead of just opening a file:// temp file.
+        // instead of just opening a file:// temp file, and MapServerPort for
+        // why the port is fixed rather than freshly chosen each time.
         private string StartMapServer(string html)
         {
             StopMapServer();
 
-            int port;
-            using (var portProbe = new TcpListener(IPAddress.Loopback, 0))
-            {
-                portProbe.Start();
-                port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
-            }
-
             var listener = new HttpListener();
-            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            listener.Prefixes.Add($"http://127.0.0.1:{MapServerPort}/");
             listener.Start();
             _mapHttpListener = listener;
 
             Task.Run(() => RunMapServer(listener, html));
 
-            return $"http://127.0.0.1:{port}/";
+            return $"http://127.0.0.1:{MapServerPort}/";
         }
 
         // Runs on a background task for as long as listener is listening,
