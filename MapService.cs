@@ -256,6 +256,22 @@ namespace PotaActivatorParkActivations
     text-align: center;
   }
   .info-bar.info-bar-active { background: #2e8b22; color: white; font-weight: bold; }
+  .context-menu {
+    position: fixed; z-index: 2000;
+    background: white; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+    padding: 4px 0; font-size: 13px; min-width: 170px;
+  }
+  .context-menu-item { padding: 8px 14px; cursor: pointer; white-space: nowrap; }
+  .context-menu-item:hover { background: #f0f0f0; }
+  .measure-panel {
+    position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 1002;
+    background: white; padding: 8px 14px; border-radius: 6px;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.4); font-size: 13px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .measure-panel[hidden] { display: none; }
+  .measure-panel button { background: none; border: none; font-size: 14px; cursor: pointer; color: inherit; padding: 0; }
+  #map.measuring-cursor { cursor: crosshair; }
   @media (prefers-color-scheme: dark) {
     body { background: #1e1e1e; }
     .gps-status { background: #2d2d30; color: #e8e8e8; box-shadow: 0 1px 5px rgba(0,0,0,0.6); }
@@ -272,6 +288,9 @@ namespace PotaActivatorParkActivations
     }
     .sidebar-header { border-bottom-color: rgba(255,255,255,0.15); }
     .sidebar-section { border-bottom-color: rgba(255,255,255,0.12); }
+    .context-menu { background: #2d2d30; color: #e8e8e8; box-shadow: 0 2px 8px rgba(0,0,0,0.6); }
+    .context-menu-item:hover { background: #3f3f42; }
+    .measure-panel { background: #2d2d30; color: #e8e8e8; box-shadow: 0 1px 5px rgba(0,0,0,0.6); }
   }
 </style>
 </head>
@@ -279,6 +298,11 @@ namespace PotaActivatorParkActivations
 <div id=""map""></div>
 <div class=""gps-status"" id=""gpsStatus"" hidden></div>
 <div class=""info-bar"" id=""infoBar"" hidden></div>
+<div class=""measure-panel"" id=""measurePanel"" hidden>
+  <span id=""measureDistanceText"">Distance: 0 ft</span>
+  <button id=""measureCloseBtn"" title=""Clear measurement"">✕</button>
+</div>
+<div class=""context-menu"" id=""mapContextMenu"" hidden></div>
 
 <button id=""sidebarToggle"" class=""sidebar-toggle"" title=""Show/hide layers panel"">☰</button>
 <div id=""sidebar"" class=""sidebar"">
@@ -707,6 +731,218 @@ if (bounds.length > 0) {
 } else {
   map.setView([39.8, -98.6], 4); // fallback: center of the continental US
 }
+
+// ---- Right-click context menu: ""Measure distance"" (Google Maps-style
+// click-to-extend polyline with a running total) and ""What's here?""
+// (reverse geocode via Nominatim, the same free OpenStreetMap service the
+// tile layers above already depend on - no API key). Both are purely
+// best-effort, same philosophy as the GPS features below: ""What's here?""
+// needs a network connection and just falls back to showing the raw
+// coordinates if that fetch fails (e.g. no signal out in the field), and
+// neither feature needs a secure context the way navigator.geolocation
+// does, so both still work in a saved, standalone file opened later.
+var contextMenuEl = document.getElementById('mapContextMenu');
+
+function hideContextMenu() {
+  contextMenuEl.hidden = true;
+}
+
+function addContextMenuItem(label, onClick) {
+  var item = document.createElement('div');
+  item.className = 'context-menu-item';
+  item.textContent = label;
+  item.addEventListener('click', function () {
+    hideContextMenu();
+    onClick();
+  });
+  contextMenuEl.appendChild(item);
+}
+
+function showContextMenu(latlng, clientX, clientY) {
+  contextMenuEl.innerHTML = '';
+  addContextMenuItem('Measure distance', function () { startMeasuring(latlng); });
+  addContextMenuItem(""What's here?"", function () { showWhatsHere(latlng); });
+  if (measurePoints.length > 0) {
+    addContextMenuItem('Clear measurement', clearMeasuring);
+  }
+
+  // Positioned at the click, then clamped so it can't run off the
+  // right/bottom edge on a narrow window - has to be shown (off-screen)
+  // first to get its real offsetWidth/Height to clamp against.
+  contextMenuEl.style.left = '-1000px';
+  contextMenuEl.style.top = '0';
+  contextMenuEl.hidden = false;
+  var menuWidth = contextMenuEl.offsetWidth;
+  var menuHeight = contextMenuEl.offsetHeight;
+  contextMenuEl.style.left = Math.max(0, Math.min(clientX, window.innerWidth - menuWidth - 4)) + 'px';
+  contextMenuEl.style.top = Math.max(0, Math.min(clientY, window.innerHeight - menuHeight - 4)) + 'px';
+}
+
+map.on('contextmenu', function (e) {
+  e.originalEvent.preventDefault();
+  showContextMenu(e.latlng, e.originalEvent.clientX, e.originalEvent.clientY);
+});
+
+// A left click anywhere on the map background both dismisses an open
+// context menu and, while measuring, places the next point - see
+// startMeasuring/addMeasurePoint below. Clicks on markers/boundary shapes
+// never reach here: Leaflet already stops those from bubbling up to the
+// map's own click handler, which is what lets a park popup still open
+// normally mid-measurement instead of also dropping a stray point on it.
+map.on('click', function (e) {
+  hideContextMenu();
+  if (measureActive) addMeasurePoint(e.latlng);
+});
+map.on('movestart zoomstart', hideContextMenu);
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape') { hideContextMenu(); clearMeasuring(); }
+});
+
+function showWhatsHere(latlng) {
+  var coordsLine = latlng.lat.toFixed(5) + ', ' + latlng.lng.toFixed(5);
+  var popup = L.popup()
+    .setLatLng(latlng)
+    .setContent('<div class=""pota-popup"">Looking up address&hellip;</div>')
+    .openOn(map);
+
+  fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=' + latlng.lat + '&lon=' + latlng.lng + '&zoom=18&addressdetails=1')
+    .then(function (resp) { if (!resp.ok) throw new Error('reverse geocode failed'); return resp.json(); })
+    .then(function (data) {
+      var address = data && data.display_name ? escapeHtml(data.display_name) : 'No address found for this location.';
+      popup.setContent('<div class=""pota-popup"" style=""min-width:200px;"">' +
+        '<div style=""margin-bottom:4px;"">' + address + '</div>' +
+        '<div style=""opacity:0.7;font-size:11px;"">' + coordsLine + '</div></div>');
+    })
+    .catch(function () {
+      popup.setContent('<div class=""pota-popup"" style=""min-width:200px;"">' +
+        '<div>Address lookup unavailable (no signal?)</div>' +
+        '<div style=""opacity:0.7;font-size:11px;"">' + coordsLine + '</div></div>');
+    });
+}
+
+// ---- Measuring tool: click to drop points, with a running total shown
+// both in the bottom panel and as a live tentative-distance tooltip that
+// follows the cursor ahead of the next click (the ""rubber band"" line) -
+// the same interaction Google Maps' own ""Measure distance"" tool uses.
+// Distances use Leaflet's own LatLng.distanceTo (great-circle, via the
+// Haversine formula) rather than the flat-degree approximation the
+// park-boundary checks above use - those trade accuracy for speed over
+// many repeated checks, but this tool only computes a handful of
+// distances per click, so the more accurate spherical formula costs
+// nothing here.
+var measureActive = false;
+var measurePoints = [];
+var measureMarkers = [];
+var measureLine = null;
+var measureRubberBand = null;
+var measureTotalMeters = 0;
+
+var measureVertexIcon = L.divIcon({
+  html: '<div style=""width:10px;height:10px;border-radius:50%;background:#ffffff;border:2px solid #1a73e8;box-shadow:0 0 2px rgba(0,0,0,0.6);""></div>',
+  className: '',
+  iconSize: [10, 10],
+  iconAnchor: [5, 5]
+});
+
+var measurePanelEl = document.getElementById('measurePanel');
+var measureDistanceTextEl = document.getElementById('measureDistanceText');
+
+// Feet under half a mile, miles beyond that - mirrors Google Maps' own
+// US-unit switchover rather than always showing one unit.
+function formatDistance(meters) {
+  var feet = meters * 3.28084;
+  if (feet < 2640) return Math.round(feet).toLocaleString() + ' ft';
+  return (feet / 5280).toFixed(2) + ' mi';
+}
+
+function recalcMeasureTotal() {
+  measureTotalMeters = 0;
+  for (var i = 1; i < measurePoints.length; i++) {
+    measureTotalMeters += measurePoints[i - 1].distanceTo(measurePoints[i]);
+  }
+  measureDistanceTextEl.textContent = 'Distance: ' + formatDistance(measureTotalMeters);
+}
+
+function rebuildMeasureLine() {
+  if (measureLine) { map.removeLayer(measureLine); measureLine = null; }
+  if (measurePoints.length > 1) {
+    measureLine = L.polyline(measurePoints, { color: '#1a73e8', weight: 3 }).addTo(map);
+  }
+}
+
+function discardRubberBand() {
+  if (measureRubberBand) { map.removeLayer(measureRubberBand); measureRubberBand = null; }
+}
+
+function removeMeasureVertexAt(index) {
+  measurePoints.splice(index, 1);
+  var marker = measureMarkers.splice(index, 1)[0];
+  map.removeLayer(marker);
+  rebuildMeasureLine();
+  recalcMeasureTotal();
+  discardRubberBand();
+  if (measurePoints.length === 0) measurePanelEl.hidden = true;
+}
+
+// Clicking a placed point removes it (and reconnects its neighbors) -
+// matches Google Maps' own measuring tool. stopPropagation keeps that
+// click from also bubbling up to the map's own click handler, which would
+// otherwise immediately re-add a point at the same spot.
+function addMeasureVertexMarker(latlng) {
+  var marker = L.marker(latlng, { icon: measureVertexIcon }).addTo(map);
+  marker.on('click', function (e) {
+    L.DomEvent.stopPropagation(e);
+    var idx = measureMarkers.indexOf(marker);
+    if (idx !== -1) removeMeasureVertexAt(idx);
+  });
+  measureMarkers.push(marker);
+}
+
+function startMeasuring(latlng) {
+  clearMeasuring();
+  measureActive = true;
+  L.DomUtil.addClass(map.getContainer(), 'measuring-cursor');
+  measurePoints.push(latlng);
+  addMeasureVertexMarker(latlng);
+  recalcMeasureTotal();
+  measurePanelEl.hidden = false;
+}
+
+function addMeasurePoint(latlng) {
+  measurePoints.push(latlng);
+  addMeasureVertexMarker(latlng);
+  rebuildMeasureLine();
+  recalcMeasureTotal();
+  discardRubberBand(); // next mousemove rebuilds it from the new last point
+}
+
+function clearMeasuring() {
+  measureActive = false;
+  L.DomUtil.removeClass(map.getContainer(), 'measuring-cursor');
+  measurePoints = [];
+  measureMarkers.forEach(function (m) { map.removeLayer(m); });
+  measureMarkers = [];
+  if (measureLine) { map.removeLayer(measureLine); measureLine = null; }
+  discardRubberBand();
+  measureTotalMeters = 0;
+  measurePanelEl.hidden = true;
+}
+
+map.on('mousemove', function (e) {
+  if (!measureActive || measurePoints.length === 0) return;
+  var last = measurePoints[measurePoints.length - 1];
+  var tentative = measureTotalMeters + last.distanceTo(e.latlng);
+  if (!measureRubberBand) {
+    measureRubberBand = L.polyline([last, e.latlng], { color: '#1a73e8', weight: 2, dashArray: '6,6' })
+      .addTo(map)
+      .bindTooltip('', { direction: 'right', offset: [12, 0] });
+  }
+  measureRubberBand.setLatLngs([last, e.latlng]);
+  measureRubberBand.setTooltipContent(formatDistance(tentative));
+  measureRubberBand.openTooltip(e.latlng);
+});
+
+document.getElementById('measureCloseBtn').addEventListener('click', clearMeasuring);
 
 // Live ""you are here"" marker from the browser's Geolocation API, plus a
 // bottom-right button that flies back to it on demand. Both purely
