@@ -699,12 +699,23 @@ wireOverlayCheckbox('overlayNotWorked', notWorkedLayer);
 wireOverlayCheckbox('overlaySota', sotaLayer);
 
 var sidebarEl = document.getElementById('sidebar');
-document.getElementById('sidebarToggle').addEventListener('click', function () {
+var sidebarToggleEl = document.getElementById('sidebarToggle');
+// The toggle button and the sidebar itself sit at the same top-left spot -
+// otherwise, whenever the sidebar is open, the button sits right on top of
+// its own Layers header text. The button only needs to exist to reopen a
+// closed sidebar, so keep it hidden any time the sidebar is already shown.
+function updateSidebarToggleVisibility() {
+  sidebarToggleEl.hidden = !sidebarEl.hidden;
+}
+sidebarToggleEl.addEventListener('click', function () {
   sidebarEl.hidden = !sidebarEl.hidden;
+  updateSidebarToggleVisibility();
 });
 document.getElementById('sidebarClose').addEventListener('click', function () {
   sidebarEl.hidden = true;
+  updateSidebarToggleVisibility();
 });
+updateSidebarToggleVisibility();
 
 addBoundaryLayers(map);
 
