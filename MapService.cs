@@ -1,5 +1,7 @@
+using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Windows.Forms;
 
 namespace PotaActivatorParkActivations
 {
@@ -161,6 +163,8 @@ namespace PotaActivatorParkActivations
             string parkJson = JsonSerializer.Serialize(parks, jsonOptions);
             string boundaryJson = JsonSerializer.Serialize(boundaryLayers ?? new List<MapBoundaryLayerDto>(), jsonOptions);
             string sotaJson = JsonSerializer.Serialize(sotaSummits ?? new List<MapSotaSummitDto>(), jsonOptions);
+            string cqZoneJson = EnsureZoneJsonLoaded("cqZones.json", ref _cqZoneJson);
+            string ituZoneJson = EnsureZoneJsonLoaded("ituZones.json", ref _ituZoneJson);
 
             // Guard against a park/boundary/summit name that happens to contain
             // "</script>" - that would otherwise break out of our embedded
@@ -172,8 +176,37 @@ namespace PotaActivatorParkActivations
             string html = HtmlTemplate
                 .Replace("__PARK_DATA__", parkJson)
                 .Replace("__BOUNDARY_DATA__", boundaryJson)
-                .Replace("__SOTA_DATA__", sotaJson);
+                .Replace("__SOTA_DATA__", sotaJson)
+                .Replace("__CQZONE_DATA__", cqZoneJson)
+                .Replace("__ITUZONE_DATA__", ituZoneJson);
             return html;
+        }
+
+        // CQ/ITU zone boundary polygons (cqZones.json/ituZones.json, shipped next
+        // to the .exe like counties.json) - simplified from HB9HIL's MIT-licensed
+        // hamradio-zones-geojson dataset down to a compact [zoneNumber, MultiPolygon
+        // coordinates] array per zone, just precise enough for the mouse-position
+        // readout below to pick the right zone. Read once and cached for the rest
+        // of the app's run, then embedded verbatim into every generated map's HTML
+        // (same reasoning as parkJson etc above) so the map stays a single
+        // self-contained file that still works when saved and reopened offline.
+        private static string? _cqZoneJson;
+        private static string? _ituZoneJson;
+
+        private static string EnsureZoneJsonLoaded(string fileName, ref string? cache)
+        {
+            if (cache != null) return cache;
+            try
+            {
+                cache = File.ReadAllText(Path.Combine(Application.StartupPath, fileName)).Replace("</", "<\\/");
+            }
+            catch
+            {
+                // Missing/unreadable file - fail safe with an empty zone list rather
+                // than breaking the whole map; the readout just shows no zone.
+                cache = "[]";
+            }
+            return cache;
         }
 
         private const string HtmlTemplate = @"<!DOCTYPE html>
@@ -218,14 +251,21 @@ namespace PotaActivatorParkActivations
   .recenter-control a { color: #1a73e8; }
   .recenter-control a svg { vertical-align: -4px; }
   .recenter-control a.waiting { opacity: 0.5; cursor: wait; }
+  .coord-box {
+    position: absolute; top: 12px; left: 12px; z-index: 1001;
+    background: white; padding: 8px 12px; border-radius: 6px;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.4); font-size: 12px; line-height: 1.45;
+    white-space: nowrap;
+  }
+  .coord-box span { font-weight: bold; }
   .sidebar-toggle {
-    position: absolute; top: 90px; left: 12px; z-index: 1001;
+    position: absolute; top: 128px; left: 12px; z-index: 1001;
     background: white; border: none; border-radius: 4px;
     padding: 8px 10px; font-size: 16px; line-height: 1; cursor: pointer;
     box-shadow: 0 1px 5px rgba(0,0,0,0.4);
   }
   .sidebar {
-    position: absolute; top: 90px; left: 12px; bottom: 24px; z-index: 1000;
+    position: absolute; top: 128px; left: 12px; bottom: 24px; z-index: 1000;
     width: 240px; max-width: calc(100vw - 24px);
     background: white; border-radius: 6px; box-shadow: 0 1px 5px rgba(0,0,0,0.4);
     overflow-y: auto; font-size: 13px;
@@ -275,6 +315,7 @@ namespace PotaActivatorParkActivations
   @media (prefers-color-scheme: dark) {
     body { background: #1e1e1e; }
     .gps-status { background: #2d2d30; color: #e8e8e8; box-shadow: 0 1px 5px rgba(0,0,0,0.6); }
+    .coord-box { background: #2d2d30; color: #e8e8e8; box-shadow: 0 1px 5px rgba(0,0,0,0.6); }
     .info-bar { background: #2d2d30; color: #e8e8e8; box-shadow: 0 1px 5px rgba(0,0,0,0.6); }
     .info-bar.info-bar-active { background: #2e8b22; color: white; }
     .legend-swatch { border-color: #999; }
@@ -296,6 +337,13 @@ namespace PotaActivatorParkActivations
 </head>
 <body>
 <div id=""map""></div>
+<div class=""coord-box"" id=""coordBox"">
+  Grid: <span id=""coordGrid"">–</span><br>
+  ITU: <span id=""coordItu"">–</span><br>
+  CQ: <span id=""coordCq"">–</span><br>
+  Lat: <span id=""coordLat"">–</span><br>
+  Long: <span id=""coordLong"">–</span>
+</div>
 <div class=""gps-status"" id=""gpsStatus"" hidden></div>
 <div class=""info-bar"" id=""infoBar"" hidden></div>
 <div class=""measure-panel"" id=""measurePanel"" hidden>
@@ -337,6 +385,9 @@ namespace PotaActivatorParkActivations
 var parkData = __PARK_DATA__;
 var boundaryLayers = __BOUNDARY_DATA__;
 var sotaData = __SOTA_DATA__;
+// Each entry is [zoneNumber, MultiPolygon coordinates] - see MapService.EnsureZoneJsonLoaded.
+var cqZoneData = __CQZONE_DATA__;
+var ituZoneData = __ITUZONE_DATA__;
 
 function escapeHtml(text) {
   if (!text) return '';
@@ -1132,6 +1183,86 @@ function isPointInAreaFeature(lon, lat, feature) {
   }
   return false;
 }
+
+// ---- Top-left readout: Maidenhead grid square, CQ/ITU zone, and lat/long
+// for wherever the mouse currently is - no click needed. Mirrors the
+// mouse-tracking readout at zone-check.eu. CQ/ITU zones aren't a simple
+// formula (their boundaries partly follow political borders, not just
+// meridians/parallels - see cqZoneData/ituZoneData above), so this reuses
+// the same point-in-polygon test as the park/boundary layers above,
+// against zone boundary polygons simplified enough to stay a small,
+// offline-friendly embed while still picking the right zone in practice.
+function buildZoneFeatures(zoneData) {
+  return zoneData.map(function (entry) {
+    var zone = entry[0], geometry = entry[1];
+    var minLon = 180, minLat = 90, maxLon = -180, maxLat = -90;
+    geometry.forEach(function (part) {
+      part.forEach(function (ring) {
+        ring.forEach(function (pt) {
+          if (pt[0] < minLon) minLon = pt[0];
+          if (pt[0] > maxLon) maxLon = pt[0];
+          if (pt[1] < minLat) minLat = pt[1];
+          if (pt[1] > maxLat) maxLat = pt[1];
+        });
+      });
+    });
+    return { zone: zone, geometry: geometry, minLon: minLon, minLat: minLat, maxLon: maxLon, maxLat: maxLat };
+  });
+}
+
+var cqZoneFeatures = buildZoneFeatures(cqZoneData);
+var ituZoneFeatures = buildZoneFeatures(ituZoneData);
+
+function findZone(lon, lat, zoneFeatures) {
+  for (var i = 0; i < zoneFeatures.length; i++) {
+    if (isPointInAreaFeature(lon, lat, zoneFeatures[i])) return zoneFeatures[i].zone;
+  }
+  return null;
+}
+
+// Standard 6-character Maidenhead locator (e.g. ""EM12ab"").
+function toGridSquare(lat, lon) {
+  lon += 180;
+  lat += 90;
+  var A = 65; // 'A'.charCodeAt(0)
+  var field = String.fromCharCode(A + Math.floor(lon / 20)) + String.fromCharCode(A + Math.floor(lat / 10));
+  var lonRem = lon - Math.floor(lon / 20) * 20;
+  var latRem = lat - Math.floor(lat / 10) * 10;
+  var square = Math.floor(lonRem / 2).toString() + Math.floor(latRem).toString();
+  lonRem -= Math.floor(lonRem / 2) * 2;
+  latRem -= Math.floor(latRem);
+  var subSquare = String.fromCharCode(97 + Math.floor(lonRem / (2 / 24))) + String.fromCharCode(97 + Math.floor(latRem / (1 / 24)));
+  return field + square + subSquare;
+}
+
+var coordGridEl = document.getElementById('coordGrid');
+var coordItuEl = document.getElementById('coordItu');
+var coordCqEl = document.getElementById('coordCq');
+var coordLatEl = document.getElementById('coordLat');
+var coordLongEl = document.getElementById('coordLong');
+var coordUpdatePending = false;
+var coordLatLng = null;
+
+function updateCoordBox() {
+  coordUpdatePending = false;
+  if (!coordLatLng) return;
+  var lat = coordLatLng.lat, lon = coordLatLng.lng;
+  coordGridEl.textContent = toGridSquare(lat, lon);
+  var ituZone = findZone(lon, lat, ituZoneFeatures);
+  var cqZone = findZone(lon, lat, cqZoneFeatures);
+  coordItuEl.textContent = ituZone === null ? '–' : ituZone;
+  coordCqEl.textContent = cqZone === null ? '–' : cqZone;
+  coordLatEl.textContent = lat.toFixed(4) + '°';
+  coordLongEl.textContent = lon.toFixed(4) + '°';
+}
+
+map.on('mousemove', function (e) {
+  coordLatLng = e.latlng;
+  if (!coordUpdatePending) {
+    coordUpdatePending = true;
+    requestAnimationFrame(updateCoordBox);
+  }
+});
 
 // Same locally-scaled-degree distance math as FerLookupService.PointToSegmentDistanceKm.
 function distancePointToSegmentKm(px, py, ax, ay, bx, by, lonScale) {

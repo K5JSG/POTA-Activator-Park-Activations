@@ -18,6 +18,7 @@ Built by Jeremy S. Gaynor, K5JSG.
   - Toggleable park boundary, National Trail, and SOTA summit layers
   - Live GPS "follow me" tracking
   - Distance measuring tool and address search
+  - Live readout of grid square, CQ/ITU zone, and lat/long under your mouse
   - Save the map out to a file
 - **Built for the field** — parks, boundaries, trails, elevation, and SOTA data are all cached locally, so the app keeps working with no signal once you've loaded a state at least once.
 

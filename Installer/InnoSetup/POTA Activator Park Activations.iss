@@ -10,6 +10,8 @@
 ;      publish\counties.json
 ;      publish\HelpContent.rtf
 ;      publish\ParkElevations.csv
+;      publish\cqZones.json
+;      publish\ituZones.json
 ;  (build.ps1, at the repo root, puts them there)
 ; ===================================================================
 
@@ -83,6 +85,8 @@ Source: "..\..\publish\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\publish\counties.json"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\..\publish\HelpContent.rtf"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\..\publish\ParkElevations.csv"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\..\publish\cqZones.json"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\..\publish\ituZones.json"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\..\License.txt"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
