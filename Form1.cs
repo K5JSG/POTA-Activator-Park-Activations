@@ -38,35 +38,58 @@ namespace PotaActivatorParkActivations
         private string _loadedStateCode = "";
 
         // The HTML from the most recent buttonShowMap_Click, kept so
-        // buttonSaveMap_Click can write out a copy without re-fetching
-        // activation info. Cleared (and buttonSaveMap disabled - see
-        // UpdateButtonStates) whenever _adifLoaded resets to false, since
+        // SaveMapCopy can write out a copy without re-fetching activation
+        // info. Cleared (and the Save Map checkbox disabled - see
+        // UpdateMapOptionControls) whenever _adifLoaded resets to false, since
         // that's exactly when the underlying data a map would show goes
         // stale.
         private string? _lastMapHtml;
 
+        // True while SetBusy has the form's actions locked (e.g. loading
+        // parks) - see UpdateMapOptionControls.
+        private bool _busy;
+
         // Serves the most recent buttonShowMap_Click's HTML over
-        // http://127.0.0.1 instead of writing it to a file:// temp file.
-        // Chrome/Edge treat file:// pages as an insecure context, so
-        // MapService's browser-geolocation "you are here" marker (see
-        // MapService.cs) is silently blocked there - the only workaround is
-        // manually whitelisting the exact temp path via chrome://flags, per
-        // user/browser/machine, which isn't something this app can do for
-        // people it's shared with. localhost is a secure context everywhere
-        // with no flags needed, so this sidesteps the problem entirely.
-        // Only one listener runs at a time - StartMapServer stops whatever
-        // was already running before starting a new one.
+        // http://127.0.0.1 instead of writing it to a file:// temp file, so
+        // the page can reach the app while it's open: the live GPS fix
+        // (/gps), the built-in map libraries, and the state's offline map -
+        // see MapServer for the routes. A file:// page can't fetch any of
+        // those. Only one listener runs at a time - StartMapServer stops
+        // whatever was already running before starting a new one.
         private HttpListener? _mapHttpListener;
 
-        // Fixed rather than a freshly-probed free port each time (the
-        // original approach) - a browser treats scheme+host+port as one
-        // origin, so a changing port meant every single "Show Map" click (or
-        // even just reloading the tab) looked like a brand-new origin with no
-        // memory of anything granted to the last one, including the
-        // Geolocation permission the "you are here" marker depends on.
-        // Arbitrary high port, chosen only to avoid the common well-known
-        // ones - nothing else on a typical machine should be listening here.
+        // Fixed rather than a freshly-probed free port each time, so every
+        // Show Map (and a reload of an already-open tab) stays the same
+        // site to the browser - originally so a browser location-permission
+        // grant carried over; the map no longer uses browser location, but
+        // a stable address is still the simpler behavior. Arbitrary high
+        // port, chosen only to avoid the common well-known ones - nothing
+        // else on a typical machine should be listening here.
         private const int MapServerPort = 55743;
+
+        // Which COM port the map's "you are here" GPS receiver is on - chosen
+        // in the GPS dropdown (see RefreshGpsPortList) and remembered between
+        // runs. The map page polls it via the map server's /gps endpoint (see
+        // MapServer), so changing it takes effect on an already-open map
+        // within a second or two, no need to click Show Map again.
+        private GpsSettings _gpsSettings = new GpsSettings();
+        private readonly GpsService _gpsService = new GpsService();
+
+        // Offline map download (see OfflineMapService and buttonMapOk_Click).
+        // Non-null only while a download is running; OK becomes Cancel then.
+        private CancellationTokenSource? _offlineMapDownloadCts;
+        private string _offlineMapDownloadState = "";
+        private readonly ToolTip _mapOptionsToolTip = new ToolTip();
+
+        // The State dropdown's starting choice: the state the GPS receiver
+        // says you're in, if GPS is on and gets a fix; otherwise the state
+        // last loaded (saved in LastState.txt), so someone who mostly works
+        // their home state always starts there. The GPS switch only happens
+        // until the dropdown is actually used - picked by hand, or parks
+        // loaded - so it never changes a state out from under anyone.
+        private const string LastStateFileName = "LastState.txt";
+        private readonly System.Windows.Forms.Timer _gpsStateTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        private bool _stateChosenByUser;
 
         // Files this program writes under %TEMP% during a session (the map
         // HTML buttonShowMap_Click opens in the browser, and the WWFF .xls
@@ -218,11 +241,17 @@ namespace PotaActivatorParkActivations
             }
         }
 
-        // How often to check for updates to the WWFF/KFF data and the POTA park
-        // list. Both barely change day to day, so there's no reason to hit the
-        // network every single time - once a week keeps things current without
-        // being chatty.
+        // How often to check for updates to the WWFF/KFF data. It barely
+        // changes day to day, so there's no reason to hit the network every
+        // single time - once a week keeps things current without being chatty.
         private static readonly TimeSpan DataRefreshInterval = TimeSpan.FromDays(7);
+
+        // How often Load Parks for State re-downloads POTA's master park list.
+        // Daily rather than weekly like the KFF data above, so a park POTA adds
+        // shows up the next day instead of up to a week later - the file is
+        // small, and a failed download (no signal) still falls back to the
+        // saved copy (see PotaService.GetAllParksAsync).
+        private static readonly TimeSpan ParkListRefreshInterval = TimeSpan.FromDays(1);
 
         // Park boundary data (used for Xfer's detection) changes far less
         // often than the KFF/park-list data above, and the download is much
@@ -248,6 +277,8 @@ namespace PotaActivatorParkActivations
         public Form1()
         {
             InitializeComponent();
+            Icon = AppLogo.Icon ?? Icon;
+            pictureBoxLogo.Image = AppLogo.Image;
             ConfigureHttpClient();
 
             // Sourced from Application.ProductVersion (the assembly's
@@ -272,6 +303,10 @@ namespace PotaActivatorParkActivations
             comboBoxState.DataSource = PotaService.UsStates;
             comboBoxState.DisplayMember = "Name";
             comboBoxState.ValueMember = "Code";
+            SelectLastLoadedState();
+            comboBoxState.SelectionChangeCommitted += (s, ev) => { _stateChosenByUser = true; _gpsStateTimer.Stop(); };
+            _gpsStateTimer.Tick += GpsStateTimer_Tick;
+            if (_gpsSettings.Enabled) _gpsStateTimer.Start();
 
             dataGridView1.Columns.Add(new DataGridViewLinkColumn
             {
@@ -346,14 +381,19 @@ namespace PotaActivatorParkActivations
             FormClosed += (s, e) => SystemEvents.UserPreferenceChanged -= SystemEvents_UserPreferenceChanged;
             FormClosed += (s, e) => CleanUpTempFiles();
             FormClosed += (s, e) => StopMapServer();
-            // _strikeFont/_gridToolTip/_gridCopyMenu are constructed via field
+            FormClosed += (s, e) => _gpsService.Dispose();
+            FormClosed += (s, e) => _offlineMapDownloadCts?.Cancel();
+            // _strikeFont/_gridToolTip/_gridCopyMenu/_mapOptionsToolTip/_gpsStateTimer are constructed via field
             // initializers, which run before InitializeComponent creates the
             // designer's `components` container - so they're never in it and
             // never auto-disposed by the generated Dispose(bool) override.
             // Disposed by hand here instead, same pattern as the cleanup above.
-            FormClosed += (s, e) => { _strikeFont?.Dispose(); _gridToolTip.Dispose(); _gridCopyMenu.Dispose(); };
+            FormClosed += (s, e) => { _strikeFont?.Dispose(); _gridToolTip.Dispose(); _gridCopyMenu.Dispose(); _mapOptionsToolTip.Dispose(); _gpsStateTimer.Dispose(); };
 
             comboBoxState.SelectedIndexChanged += ComboBoxState_SelectedIndexChanged;
+            _gpsSettings = GpsSettings.Load(GetWritableAppDataFolder());
+            RefreshGpsPortList();
+            ApplyGpsSettings();
             UpdateButtonStates();
             UpdateWwffDateText(WwffUpdateService.LoadInfoFile(GetWritableAppDataFolder()));
 
@@ -385,6 +425,11 @@ namespace PotaActivatorParkActivations
             textBoxWwffDate.Top = 70 + extra;
             labelSearch.Top = 75 + extra;
             textBoxSearch.Top = 72 + extra;
+            checkBoxSaveMap.Top = 74 + extra;
+            checkBoxOfflineMap.Top = 74 + extra;
+            buttonMapOk.Top = 71 + extra;
+            labelGps.Top = 75 + extra;
+            comboBoxGps.Top = 71 + extra;
             progressBar1.Top = 105 + extra;
             dataGridView1.Top = 150 + extra;
         }
@@ -670,60 +715,30 @@ namespace PotaActivatorParkActivations
             listener.Start();
             _mapHttpListener = listener;
 
-            Task.Run(() => RunMapServer(listener, html));
+            Task.Run(() => MapServer.Run(listener, html, GetGpsStatusJson, GetOfflineMapInfo));
 
             // A trailing query string that changes every call, appended only
             // to the URL handed to the browser (the listener prefix above
             // stays bare "/" - HttpListener matches any query string under
-            // it, so RunMapServer needs no changes for this). Confirmed
+            // it, so MapServer needs no changes for this). Confirmed
             // necessary: with the exact same URL every time, opening it
             // again could just switch focus to whatever tab already had it
             // open instead of actually reloading - silently leaving that tab
             // running whatever HTML an earlier click had generated. The
             // query string forces a real navigation every time while leaving
-            // scheme+host+port (an origin - what the browser actually scopes
-            // the Geolocation permission grant to) untouched, so that
-            // permission still isn't lost the way it was with a changing
-            // port.
+            // the address itself (see MapServerPort) unchanged.
             return $"http://127.0.0.1:{MapServerPort}/?t={DateTime.UtcNow.Ticks}";
         }
 
-        // Runs on a background task for as long as listener is listening,
-        // serving the same map html to every request (including e.g. the
-        // browser's favicon.ico probe - harmless, and not worth special-
-        // casing). Exits once StopMapServer() calls listener.Stop(), which
-        // makes the pending GetContext() throw.
-        private static void RunMapServer(HttpListener listener, string html)
+        // Called from the map server's threads: which state's offline map the
+        // open map should use (the state its parks were loaded for, not
+        // whatever the dropdown shows now), and its file if downloaded.
+        private MapServer.OfflineMapInfo GetOfflineMapInfo()
         {
-            byte[] body = Encoding.UTF8.GetBytes(html);
-            while (listener.IsListening)
-            {
-                HttpListenerContext context;
-                try
-                {
-                    context = listener.GetContext();
-                }
-                catch
-                {
-                    return;
-                }
-
-                try
-                {
-                    context.Response.ContentType = "text/html; charset=utf-8";
-                    context.Response.ContentLength64 = body.Length;
-                    context.Response.OutputStream.Write(body, 0, body.Length);
-                }
-                catch
-                {
-                    // Best-effort - a browser tab closing mid-request isn't
-                    // worth reporting.
-                }
-                finally
-                {
-                    context.Response.OutputStream.Close();
-                }
-            }
+            string state = _loadedStateCode;
+            string appData = GetWritableAppDataFolder();
+            return new MapServer.OfflineMapInfo(state,
+                OfflineMapService.IsDownloaded(appData, state) ? OfflineMapService.GetPath(appData, state) : null);
         }
 
         private void StopMapServer()
@@ -739,6 +754,268 @@ namespace PotaActivatorParkActivations
                 // Best-effort, same as CleanUpTempFiles.
             }
             _mapHttpListener = null;
+        }
+
+        private static string StateName(string code) =>
+            PotaService.UsStates.FirstOrDefault(st => st.Code == code)?.Name ?? code;
+
+        // ---- Save Map / Offline Map checkboxes + OK (the row under Load ADIF
+        // File). Check either or both, then OK does each checked one. While an
+        // offline map download is running, OK becomes Cancel for it.
+
+        private void MapOptionCheckBox_CheckedChanged(object? sender, EventArgs e) => UpdateMapOptionControls();
+
+        private void UpdateMapOptionControls()
+        {
+            bool downloading = _offlineMapDownloadCts != null;
+            string state = comboBoxState.SelectedValue?.ToString() ?? "";
+
+            // Save Map needs a map shown this session (same as the old Save
+            // Map button); Offline Map needs a state picked in the dropdown -
+            // parks don't have to be loaded yet, so a map can be downloaded
+            // at home before heading out.
+            checkBoxSaveMap.Enabled = _lastMapHtml != null && !_busy;
+            if (!checkBoxSaveMap.Enabled) checkBoxSaveMap.Checked = false;
+            checkBoxOfflineMap.Enabled = state.Length > 0 && !downloading;
+
+            buttonMapOk.Text = downloading ? "Cancel" : "OK";
+            buttonMapOk.Enabled = downloading || checkBoxSaveMap.Checked || (checkBoxOfflineMap.Checked && checkBoxOfflineMap.Enabled);
+
+            _mapOptionsToolTip.SetToolTip(checkBoxSaveMap, _lastMapHtml != null
+                ? "Save a copy of the map you last opened to an .html file"
+                : "Click Show Map first, then you can save a copy of it");
+            string offlineTip;
+            if (downloading)
+                offlineTip = $"Downloading the offline map for {StateName(_offlineMapDownloadState)} - click Cancel to stop";
+            else if (state.Length == 0)
+                offlineTip = "Pick a state first";
+            else if (OfflineMapService.IsDownloaded(GetWritableAppDataFolder(), state))
+            {
+                var file = new FileInfo(OfflineMapService.GetPath(GetWritableAppDataFolder(), state));
+                offlineTip = $"{StateName(state)} is downloaded ({OfflineMapService.FormatSize(file.Length)}, {file.LastWriteTime:d MMM yyyy}) - check and click OK to update it to the latest map";
+            }
+            else
+                offlineTip = $"Download the offline street map for {StateName(state)}, so the park map works with no internet";
+            _mapOptionsToolTip.SetToolTip(checkBoxOfflineMap, offlineTip);
+        }
+
+        private void buttonMapOk_Click(object sender, EventArgs e)
+        {
+            if (_offlineMapDownloadCts != null)
+            {
+                _offlineMapDownloadCts.Cancel();
+                return;
+            }
+
+            if (checkBoxSaveMap.Checked && SaveMapCopy())
+                checkBoxSaveMap.Checked = false;
+
+            string state = comboBoxState.SelectedValue?.ToString() ?? "";
+            if (checkBoxOfflineMap.Checked && state.Length > 0)
+                DownloadOfflineMap(state);
+        }
+
+        private async void DownloadOfflineMap(string stateCode)
+        {
+            if (_offlineMapDownloadCts != null) return;
+            string name = StateName(stateCode);
+            string appData = GetWritableAppDataFolder();
+
+            // Asked first (with the size when it can be found) since these are
+            // big - a state is typically a few hundred MB, the largest over
+            // 1 GB - and may be on a metered or hotspot connection.
+            long? size = await OfflineMapService.GetDownloadSizeAsync(stateCode);
+            string sizeText = size.HasValue ? $" ({OfflineMapService.FormatSize(size.Value)})" : "";
+            bool updating = OfflineMapService.IsDownloaded(appData, stateCode);
+            if (MessageBox.Show(
+                    $"{(updating ? "Update" : "Download")} the offline map for {name}{sizeText}?\n\n" +
+                    "The park map can then show streets, trails, parks and house numbers for this state with no internet connection. " +
+                    "You can keep using the program while it downloads.",
+                    "Offline Map", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+                return;
+
+            using var cts = new CancellationTokenSource();
+            _offlineMapDownloadCts = cts;
+            _offlineMapDownloadState = stateCode;
+            UpdateMapOptionControls();
+            progressBar1.Value = 0;
+            textBoxStatus.Text = $"Downloading the offline map for {name}...";
+
+            var progress = new Progress<(long Received, long? Total)>(p =>
+            {
+                if (IsDisposed) return;
+                if (p.Total is long total && total > 0)
+                {
+                    progressBar1.Value = (int)Math.Min(100, p.Received * 100 / total);
+                    textBoxStatus.Text = $"Downloading the offline map for {name}: {OfflineMapService.FormatSize(p.Received)} of {OfflineMapService.FormatSize(total)}...";
+                }
+                else
+                {
+                    textBoxStatus.Text = $"Downloading the offline map for {name}: {OfflineMapService.FormatSize(p.Received)}...";
+                }
+            });
+
+            try
+            {
+                await OfflineMapService.DownloadAsync(appData, stateCode, progress, cts.Token);
+                if (!IsDisposed)
+                {
+                    checkBoxOfflineMap.Checked = false;
+                    textBoxStatus.Text = $"Offline map for {name} downloaded. Show Map now uses it automatically for {name}.";
+                }
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                // Also how a download still running when the program closes
+                // ends (see the FormClosed handler) - nothing left to update then.
+                if (!IsDisposed) textBoxStatus.Text = $"Offline map download for {name} cancelled.";
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed)
+                {
+                    textBoxStatus.Text = $"Offline map download for {name} failed.";
+                    MessageBox.Show($"Couldn't download the offline map for {name}:\n\n{ex.Message}", "Offline Map", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+            finally
+            {
+                _offlineMapDownloadCts = null;
+                _offlineMapDownloadState = "";
+                if (!IsDisposed)
+                {
+                    progressBar1.Value = 0;
+                    UpdateMapOptionControls();
+                }
+            }
+        }
+
+        private void SelectLastLoadedState()
+        {
+            try
+            {
+                string path = Path.Combine(GetWritableAppDataFolder(), LastStateFileName);
+                if (!File.Exists(path)) return;
+                string code = File.ReadAllText(path).Trim().ToUpperInvariant();
+                if (PotaService.UsStates.Any(st => st.Code == code))
+                    comboBoxState.SelectedValue = code;
+            }
+            catch
+            {
+                // Unreadable - just keeps the dropdown's first entry.
+            }
+        }
+
+        private void SaveLastLoadedState(string stateCode)
+        {
+            try
+            {
+                File.WriteAllText(Path.Combine(GetWritableAppDataFolder(), LastStateFileName), stateCode);
+            }
+            catch
+            {
+                // Best-effort - only means the dropdown won't start on it next time.
+            }
+        }
+
+        // Waits (once a second) for the GPS receiver's first fix after startup
+        // or after a receiver is picked, then selects the state it's in. Stops
+        // for good once the state has been chosen by hand or parks are loaded.
+        private void GpsStateTimer_Tick(object? sender, EventArgs e)
+        {
+            if (_stateChosenByUser || _parksLoaded || !_gpsSettings.Enabled)
+            {
+                _gpsStateTimer.Stop();
+                return;
+            }
+            if (_busy || _gpsService.GetCurrentFix() is not (double lat, double lon)) return;
+
+            _gpsStateTimer.Stop();
+            string code = CountyLookupService.FindStateContaining(lat, lon);
+            if (code.Length == 0 || !PotaService.UsStates.Any(st => st.Code == code)) return;
+            if (!string.Equals(comboBoxState.SelectedValue?.ToString(), code, StringComparison.Ordinal))
+            {
+                comboBoxState.SelectedValue = code;
+                textBoxStatus.Text = $"State set to {StateName(code)} from your GPS position.";
+            }
+        }
+
+        // ---- GPS dropdown: "Off", "Windows / Browser Location", then every
+        // COM port on the PC. The list is rebuilt each time it's opened, so a
+        // receiver plugged in after the program started still shows up. A
+        // receiver's baud rate is detected automatically (see
+        // GpsService.AutoBaudRates). The choice is remembered between runs
+        // (GpsSettings.json).
+
+        private sealed record GpsPortItem(string Port, string Display, bool WindowsLocation = false)
+        {
+            public override string ToString() => Display;
+        }
+
+        private void RefreshGpsPortList()
+        {
+            var ports = System.IO.Ports.SerialPort.GetPortNames()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            bool savedPortMissing = _gpsSettings.Enabled && !ports.Contains(_gpsSettings.Port, StringComparer.OrdinalIgnoreCase);
+            if (savedPortMissing) ports.Add(_gpsSettings.Port);
+
+            // COM2 before COM10, not plain string order.
+            ports = ports
+                .OrderBy(p => p.StartsWith("COM", StringComparison.OrdinalIgnoreCase) && int.TryParse(p.AsSpan(3), out int n) ? n : int.MaxValue)
+                .ThenBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            comboBoxGps.BeginUpdate();
+            comboBoxGps.Items.Clear();
+            comboBoxGps.Items.Add(new GpsPortItem("", "Off"));
+            comboBoxGps.Items.Add(new GpsPortItem("", "Windows / Browser Location", WindowsLocation: true));
+            foreach (string port in ports)
+            {
+                // The chosen port stays listed while it's unplugged, so it's
+                // clear what the program is still waiting on.
+                bool missing = savedPortMissing && string.Equals(port, _gpsSettings.Port, StringComparison.OrdinalIgnoreCase);
+                comboBoxGps.Items.Add(new GpsPortItem(port, missing ? port + " (not connected)" : port));
+            }
+            var items = comboBoxGps.Items.Cast<GpsPortItem>().ToList();
+            comboBoxGps.SelectedItem = _gpsSettings.UseWindowsLocation
+                ? items.First(i => i.WindowsLocation)
+                : items.FirstOrDefault(i => !i.WindowsLocation && string.Equals(i.Port, _gpsSettings.Port, StringComparison.OrdinalIgnoreCase)) ?? items[0];
+            comboBoxGps.EndUpdate();
+        }
+
+        private void comboBoxGps_DropDown(object? sender, EventArgs e) => RefreshGpsPortList();
+
+        private void comboBoxGps_SelectionChangeCommitted(object? sender, EventArgs e)
+        {
+            if (comboBoxGps.SelectedItem is not GpsPortItem item) return;
+            _gpsSettings = new GpsSettings { Port = item.Port, UseWindowsLocation = item.WindowsLocation };
+            _gpsSettings.Save(GetWritableAppDataFolder());
+            ApplyGpsSettings();
+            if (_gpsSettings.Enabled && !_stateChosenByUser && !_parksLoaded) _gpsStateTimer.Start();
+            else _gpsStateTimer.Stop();
+        }
+
+        private void ApplyGpsSettings()
+        {
+            if (_gpsSettings.Enabled)
+                _gpsService.Start(_gpsSettings.Port, 0);
+            else
+                _gpsService.Stop();
+        }
+
+        // Called from the map server's background thread.
+        // comboBoxGps_SelectionChangeCommitted swaps in a whole new
+        // GpsSettings object rather than mutating the current one, so the
+        // single read of _gpsSettings here always sees one consistent value.
+        private string GetGpsStatusJson()
+        {
+            var settings = _gpsSettings;
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                mode = settings.UseWindowsLocation ? "browser" : settings.Enabled ? "serial" : "off",
+                serial = settings.Enabled ? _gpsService.GetStatus() : null
+            });
         }
 
         // Colors a button Kelly Green with white text when it's the natural next
@@ -781,10 +1058,10 @@ namespace PotaActivatorParkActivations
             SetButtonHighlight(buttonExportExcel, _adifLoaded);
             SetButtonHighlight(buttonShowMap, _adifLoaded);
 
-            // Not part of the highlighted "next step" chain above - it's an
-            // optional follow-up to Show Map, not something the workflow
-            // pushes the user toward.
-            buttonSaveMap.Enabled = _lastMapHtml != null;
+            // Not part of the highlighted "next step" chain above - Save Map
+            // and Offline Map are optional, not something the workflow pushes
+            // the user toward.
+            UpdateMapOptionControls();
         }
 
         private void DataGridView1_CellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
@@ -1105,7 +1382,7 @@ namespace PotaActivatorParkActivations
 
                 _myActivations = new Dictionary<string, List<DateTime>>(StringComparer.OrdinalIgnoreCase);
                 _allRawParks = await PotaService.GetAllParksAsync(
-                    _http, GetWritableAppDataFolder(), DataRefreshInterval,
+                    _http, GetWritableAppDataFolder(), ParkListRefreshInterval,
                     msg => textBoxStatus.Text = msg);
                 var candidates = PotaService.FilterByState(_allRawParks, stateCode);
                 textBoxStatus.Text = $"Looking up counties for {candidates.Count} parks...";
@@ -1225,6 +1502,7 @@ namespace PotaActivatorParkActivations
                 BindGrid();
                 _parksLoaded = true;
                 _loadedStateCode = stateCode;
+                SaveLastLoadedState(stateCode);
                 _adifLoaded = false;
                 _lastMapHtml = null;
 
@@ -1390,11 +1668,12 @@ namespace PotaActivatorParkActivations
             SetBusy(true);
             try
             {
-                textBoxStatus.Text = "Looking up activation history from POTA (this can take a little while)...";
+                textBoxStatus.Text = "Checking activation history from POTA (refreshed once a day, saved for offline use)...";
                 progressBar1.Value = 0;
                 var progress = new Progress<int>(pct => progressBar1.Value = Math.Min(pct, 100));
 
-                var activationInfo = await PotaService.FetchActivationInfoAsync(_http, _parks, progress);
+                var activationResult = await PotaService.FetchActivationInfoAsync(_http, _parks, GetWritableAppDataFolder(), progress);
+                var activationInfo = activationResult.Info;
 
                 var mapParks = new List<MapParkDto>();
                 foreach (var park in _parks)
@@ -1453,7 +1732,15 @@ namespace PotaActivatorParkActivations
                 };
                 Process.Start(psi);
 
-                textBoxStatus.Text = "Map opened in your default browser.";
+                // With no connection, the map shows the activation history
+                // saved from the last time it could be looked up - say so
+                // (and how old it is) rather than letting it pass as current.
+                if (activationResult.FailedCount == 0)
+                    textBoxStatus.Text = "Map opened in your default browser.";
+                else if (activationResult.OldestStaleUtc is DateTime staleUtc)
+                    textBoxStatus.Text = $"Map opened in your default browser. Couldn't reach POTA - showing saved activation history (oldest from {staleUtc.ToLocalTime():d MMM yyyy}).";
+                else
+                    textBoxStatus.Text = "Map opened in your default browser. Couldn't reach POTA - no saved activation history yet; Show Map once with a connection to save it.";
             }
             catch (Exception ex)
             {
@@ -1645,14 +1932,15 @@ namespace PotaActivatorParkActivations
         }
 
         // Writes out a permanent copy of the map buttonShowMap_Click last
-        // opened - the browser was only ever shown a %TEMP% copy, which
-        // CleanUpTempFiles deletes when the program closes.
-        private void buttonSaveMap_Click(object sender, EventArgs e)
+        // opened (the Save Map checkbox + OK) - the browser was only ever
+        // served it by the app's local map server, which stops when the
+        // program closes. Returns whether a file was actually saved.
+        private bool SaveMapCopy()
         {
             if (_lastMapHtml == null)
             {
                 MessageBox.Show("Show the map first, then you can save a copy of it.");
-                return;
+                return false;
             }
             string stateCode = comboBoxState.SelectedValue?.ToString() ?? "Parks";
             using var dlg = new SaveFileDialog
@@ -1660,15 +1948,17 @@ namespace PotaActivatorParkActivations
                 Filter = "HTML files (*.html)|*.html",
                 FileName = $"POTA_{stateCode}_Map.html"
             };
-            if (dlg.ShowDialog() != DialogResult.OK) return;
+            if (dlg.ShowDialog() != DialogResult.OK) return false;
             try
             {
-                File.WriteAllText(dlg.FileName, _lastMapHtml, Encoding.UTF8);
+                File.WriteAllText(dlg.FileName, MapService.ToStandaloneHtml(_lastMapHtml), Encoding.UTF8);
                 MessageBox.Show("Map file saved successfully.");
+                return true;
             }
             catch (Exception ex)
             {
                 MessageBox.Show("Error saving map: " + ex.Message);
+                return false;
             }
         }
 
@@ -1780,6 +2070,7 @@ namespace PotaActivatorParkActivations
 
         private void SetBusy(bool busy)
         {
+            _busy = busy;
             comboBoxState.Enabled = !busy;
             textBoxSearch.Enabled = !busy && _parks.Count > 0;
             Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
@@ -1791,7 +2082,7 @@ namespace PotaActivatorParkActivations
                 buttonExportCsv.Enabled = false;
                 buttonExportExcel.Enabled = false;
                 buttonShowMap.Enabled = false;
-                buttonSaveMap.Enabled = false;
+                UpdateMapOptionControls();
                 SetButtonHighlight(buttonLoadParks, false);
                 SetButtonHighlight(buttonLoadAdif, false);
                 SetButtonHighlight(buttonExportCsv, false);

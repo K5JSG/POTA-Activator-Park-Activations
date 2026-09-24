@@ -14,11 +14,16 @@
     <Description>This program is designed to get all parks in a state with their counties, and then compare it to a adif file.  It will mark any parks already worked automatically.  You can then export your finished report as either a .csv or .xlxm file.</Description>
     <PlatformTarget>AnyCPU</PlatformTarget>
     <ApplicationIcon>logo.ico</ApplicationIcon>
-    <Version>1.12.0</Version>
+    <Version>1.13.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
     <Content Include="logo.ico" />
+    <!-- Window icons and the logo shown in the main window - see AppLogo.cs.
+         Logo.png (the full-size source artwork) is kept in the project folder
+         to regenerate these from, not shipped. -->
+    <EmbeddedResource Include="logo.ico" LogicalName="AppLogo/logo.ico" />
+    <EmbeddedResource Include="logo-256.png" LogicalName="AppLogo/logo-256.png" />
   </ItemGroup>
 
   <ItemGroup>
@@ -34,6 +39,15 @@
     <PackageReference Include="ClosedXML" Version="0.105.1" />
     <PackageReference Include="ExcelDataReader" Version="3.9.0" />
     <PackageReference Include="ExcelDataReader.DataSet" Version="3.9.0" />
+    <PackageReference Include="System.IO.Ports" Version="10.0.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Leaflet, protomaps-leaflet and the offline map style, built into the
+         exe and served by the map's local server (Form1.RunMapServer) so the
+         map opens with no internet connection. Named by their path under
+         MapAssets/ with forward slashes, e.g. "MapAssets/leaflet/leaflet.js". -->
+    <EmbeddedResource Include="MapAssets\**\*" LogicalName="MapAssets/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

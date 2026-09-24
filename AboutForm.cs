@@ -9,6 +9,7 @@ namespace PotaActivatorParkActivations
         public AboutForm()
         {
             InitializeComponent();
+            Icon = AppLogo.Icon ?? Icon;
 
             textBoxVersion.Text = $"Version {Application.ProductVersion}";
 

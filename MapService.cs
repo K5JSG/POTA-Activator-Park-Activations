@@ -150,11 +150,12 @@ namespace PotaActivatorParkActivations
 
     public static class MapService
     {
-        // Builds one complete, self-contained HTML file (map + all the data + all the
-        // JavaScript needed to draw it) as a single string. This file can be opened by
-        // any web browser - no server, no install, no account, no API key. It uses
-        // Leaflet (a free open-source mapping library) and OpenStreetMap map tiles
-        // (also free), both loaded from their public content-delivery networks.
+        // Builds one complete HTML page (map + all the data + all the JavaScript
+        // needed to draw it) as a single string, served by the app's local map
+        // server (MapServer) - no install, no account, no API key. It uses
+        // Leaflet (a free open-source mapping library) built into the app, and
+        // either OpenStreetMap/Esri tiles online or the state's downloaded
+        // offline map. See ToStandaloneHtml for the Save Map copy.
         public static string BuildMapHtml(
             List<MapParkDto> parks, List<MapBoundaryLayerDto>? boundaryLayers = null,
             List<MapSotaSummitDto>? sotaSummits = null)
@@ -174,6 +175,14 @@ namespace PotaActivatorParkActivations
             sotaJson = sotaJson.Replace("</", "<\\/");
 
             string html = HtmlTemplate
+                // The program's logo as the browser tab icon - inlined as a
+                // data URI rather than served, so a Save Map copy opened
+                // from disk shows it too.
+                .Replace("__FAVICON__", "data:image/png;base64," + Convert.ToBase64String(MapServer.ReadAssetBytes("favicon.png")))
+                .Replace("__LEAFLET_CSS__", MapServer.AssetPrefix + "leaflet/leaflet.css")
+                .Replace("__LEAFLET_JS__", MapServer.AssetPrefix + "leaflet/leaflet.js")
+                .Replace("__PROTOMAPS_JS__", MapServer.AssetPrefix + "protomaps-leaflet/protomaps-leaflet.js")
+                .Replace("__OSM_STYLE__", MapServer.ReadAssetText("osm-style.js").Replace("</", "<\\/"))
                 .Replace("__PARK_DATA__", parkJson)
                 .Replace("__BOUNDARY_DATA__", boundaryJson)
                 .Replace("__SOTA_DATA__", sotaJson)
@@ -181,6 +190,18 @@ namespace PotaActivatorParkActivations
                 .Replace("__ITUZONE_DATA__", ituZoneJson);
             return html;
         }
+
+        // The map page as served loads Leaflet and protomaps-leaflet from the
+        // app's own map server (so it opens with no internet). A copy saved
+        // with Save Map is opened later straight from disk, with no server
+        // behind it, so it points back at the same library versions on their
+        // public CDNs instead - it needs a connection for the map tiles
+        // anyway, exactly as saved maps always have.
+        public static string ToStandaloneHtml(string servedHtml) =>
+            servedHtml
+                .Replace(MapServer.AssetPrefix + "leaflet/leaflet.css", "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css")
+                .Replace(MapServer.AssetPrefix + "leaflet/leaflet.js", "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js")
+                .Replace(MapServer.AssetPrefix + "protomaps-leaflet/protomaps-leaflet.js", "https://unpkg.com/protomaps-leaflet@5.1.0/dist/protomaps-leaflet.js");
 
         // CQ/ITU zone boundary polygons (cqZones.json/ituZones.json, shipped next
         // to the .exe like counties.json) - simplified from HB9HIL's MIT-licensed
@@ -214,8 +235,9 @@ namespace PotaActivatorParkActivations
 <head>
 <meta charset=""utf-8"" />
 <title>POTA Activator Park Activations - Park Map</title>
+<link rel=""icon"" type=""image/png"" href=""__FAVICON__"" />
 <meta name=""viewport"" content=""width=device-width, initial-scale=1"" />
-<link rel=""stylesheet"" href=""https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"" />
+<link rel=""stylesheet"" href=""__LEAFLET_CSS__"" />
 <style>
   html, body { margin: 0; padding: 0; height: 100%; font-family: Segoe UI, Arial, sans-serif; }
   #map { position: absolute; top: 0; left: 0; right: 0; bottom: 0; }
@@ -288,6 +310,8 @@ namespace PotaActivatorParkActivations
   }
   .sidebar-row { display: flex; align-items: center; padding: 3px 0; cursor: pointer; white-space: nowrap; }
   .sidebar-row input { margin: 0 6px 0 0; }
+  .sidebar-row[hidden], .sidebar-note[hidden] { display: none; }
+  .sidebar-note { font-size: 11px; opacity: 0.7; padding: 3px 0 0 0; max-width: 190px; line-height: 1.35; }
   .info-bar {
     position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 1002;
     max-width: min(600px, calc(100vw - 24px));
@@ -360,8 +384,10 @@ namespace PotaActivatorParkActivations
   </div>
   <div class=""sidebar-section"">
     <div class=""sidebar-heading"">Base Map</div>
-    <label class=""sidebar-row""><input type=""radio"" name=""baseLayer"" id=""baseLayerStreet"" checked /> Street</label>
-    <label class=""sidebar-row""><input type=""radio"" name=""baseLayer"" id=""baseLayerSatellite"" /> Satellite</label>
+    <label class=""sidebar-row"" id=""baseLayerOfflineRow"" hidden><input type=""radio"" name=""baseLayer"" id=""baseLayerOffline"" /> <span id=""baseLayerOfflineLabel"">Offline</span></label>
+    <label class=""sidebar-row""><input type=""radio"" name=""baseLayer"" id=""baseLayerStreet"" checked /> Street (online)</label>
+    <label class=""sidebar-row""><input type=""radio"" name=""baseLayer"" id=""baseLayerSatellite"" /> Satellite (online)</label>
+    <div class=""sidebar-note"" id=""offlineMapNote"" hidden></div>
   </div>
   <div class=""sidebar-section"">
     <div class=""sidebar-heading"">Show</div>
@@ -380,7 +406,11 @@ namespace PotaActivatorParkActivations
   </div>
 </div>
 
-<script src=""https://unpkg.com/leaflet@1.9.4/dist/leaflet.js""></script>
+<script src=""__LEAFLET_JS__""></script>
+<script src=""__PROTOMAPS_JS__""></script>
+<script>
+__OSM_STYLE__
+</script>
 <script>
 var parkData = __PARK_DATA__;
 var boundaryLayers = __BOUNDARY_DATA__;
@@ -709,7 +739,7 @@ var map = L.map('map');
 var streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
   attribution: '&copy; <a href=""https://www.openstreetmap.org/copyright"">OpenStreetMap</a> contributors'
-}).addTo(map);
+});
 
 // Esri's World Imagery - free, no API key/account needed, same as the
 // OpenStreetMap tiles above.
@@ -730,15 +760,76 @@ var sotaLayer = L.layerGroup();
 // L.control.layers, so it can live alongside the legend and the boundary
 // layer checkboxes (addBoundaryLayers below) in one collapsible place
 // rather than as several separate floating boxes around the map.
-function wireBaseLayerRadio(id, layerToShow, layerToHide) {
+// No base layer is added until it's known whether this state's offline map
+// is available (see below) - otherwise the online Street tiles would start
+// downloading for the moment before the offline map replaced them, wasting
+// data online and just failing with no signal.
+var currentBaseLayer = null;
+function setBaseLayer(layer) {
+  if (!layer || layer === currentBaseLayer) return;
+  if (currentBaseLayer) map.removeLayer(currentBaseLayer);
+  map.addLayer(layer);
+  currentBaseLayer = layer;
+}
+function useStreetIfNoBaseYet() {
+  if (!currentBaseLayer) setBaseLayer(streetLayer);
+}
+// The offline layer is only created once the app confirms this state's
+// offline map is downloaded (see below), hence the lookup at change time.
+var offlineLayer = null;
+function wireBaseLayerRadio(id, getLayer) {
   document.getElementById(id).addEventListener('change', function (e) {
-    if (!e.target.checked) return;
-    map.removeLayer(layerToHide);
-    map.addLayer(layerToShow);
+    if (e.target.checked) setBaseLayer(getLayer());
   });
 }
-wireBaseLayerRadio('baseLayerStreet', streetLayer, satelliteLayer);
-wireBaseLayerRadio('baseLayerSatellite', satelliteLayer, streetLayer);
+wireBaseLayerRadio('baseLayerStreet', function () { return streetLayer; });
+wireBaseLayerRadio('baseLayerSatellite', function () { return satelliteLayer; });
+wireBaseLayerRadio('baseLayerOffline', function () { return offlineLayer; });
+
+// Offline base map: a vector map of the loaded state (OpenStreetMap data,
+// styled by osm-style.js to look like the online Street layer) that the
+// app's Offline Map menu downloads once and keeps. The app's local server
+// serves it in pieces at /offline-map.pmtiles. Only possible when this page
+// came from that server - a saved copy opened later (file://) has no server
+// behind it, and just keeps the online layers exactly as before. When the
+// state's map is downloaded it's picked by default, since it works with or
+// without signal and matches the Street layer's look.
+if (location.protocol === 'http:' && typeof protomapsL !== 'undefined' && window.osmStyle) {
+  fetch('/offline-map/info', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (info) {
+    var note = document.getElementById('offlineMapNote');
+    if (!info.available) {
+      if (info.state) {
+        note.textContent = 'No offline map for ' + info.state + ' yet - check Offline Map and click OK in the app, then click Show Map again.';
+        note.hidden = false;
+      }
+      useStreetIfNoBaseYet();
+      return;
+    }
+    osmStyle.ready.then(function () {
+      offlineLayer = protomapsL.leafletLayer({
+        url: '/offline-map.pmtiles',
+        maxDataZoom: 15,
+        maxZoom: 19,
+        paintRules: osmStyle.paintRules,
+        labelRules: osmStyle.labelRules,
+        attribution: '&copy; <a href=""https://www.openstreetmap.org/copyright"">OpenStreetMap</a> contributors, <a href=""https://protomaps.com"">Protomaps</a>'
+      });
+      document.getElementById('baseLayerOfflineLabel').textContent = 'Offline (' + info.state + ')';
+      document.getElementById('baseLayerOfflineRow').hidden = false;
+      note.textContent = 'Offline covers ' + info.state + ' only - areas past the state line show gray.';
+      note.hidden = false;
+      if (document.getElementById('baseLayerStreet').checked) {
+        document.getElementById('baseLayerOffline').checked = true;
+        setBaseLayer(offlineLayer);
+      }
+    });
+  }).catch(useStreetIfNoBaseYet); // app closed - online layers only
+  // Never leave the map blank if the check is slow for some reason; a late
+  // answer still switches to the offline map (Street is still checked).
+  setTimeout(useStreetIfNoBaseYet, 3000);
+} else {
+  setBaseLayer(streetLayer);
+}
 
 function wireOverlayCheckbox(id, layer) {
   document.getElementById(id).addEventListener('change', function (e) {
@@ -801,8 +892,8 @@ if (bounds.length > 0) {
 // best-effort, same philosophy as the GPS features below: ""What's here?""
 // needs a network connection and just falls back to showing the raw
 // coordinates if that fetch fails (e.g. no signal out in the field), and
-// neither feature needs a secure context the way navigator.geolocation
-// does, so both still work in a saved, standalone file opened later.
+// neither feature needs the app's local server behind the page, so both
+// still work in a saved, standalone file opened later.
 var contextMenuEl = document.getElementById('mapContextMenu');
 
 function hideContextMenu() {
@@ -1006,47 +1097,57 @@ map.on('mousemove', function (e) {
 
 document.getElementById('measureCloseBtn').addEventListener('click', clearMeasuring);
 
-// Live ""you are here"" marker from the browser's Geolocation API, plus a
-// bottom-right button that flies back to it on demand. Both purely
-// best-effort - if there's no location hardware, the browser/OS location
-// permission is denied, or this is opened in a context that doesn't allow
-// it, locationerror just fires and the map works exactly as it did before,
-// with no marker and a button that quietly does nothing.
+// Live ""you are here"" marker from whichever source the app's GPS dropdown
+// has selected, plus a bottom-right button that flies back to it on demand:
+//   'serial'  - a GPS receiver on a COM port, read by the app itself and
+//               polled here via the local server's /gps endpoint (pollGps)
+//   'browser' - Windows / Browser Location: this page's own
+//               navigator.geolocation, which on Windows comes from the
+//               Windows location service (Wi-Fi/cell-tower lookups on a PC
+//               without GPS hardware - can be miles off)
+//   'off'     - no location
+// All purely best-effort - with no fix, a denied permission or the receiver
+// unplugged, the map works exactly as it does without them.
 var youMarker = null;
 var youAccuracyCircle = null;
 var youLocatedOnce = false;
 var recenterButton = null;
 
-// A saved, standalone copy of this file (Save Map, opened later via
-// file://) can never get live location, no matter what this script does -
-// browsers only allow navigator.geolocation from a secure context
-// (https:, or the loopback exception the live map's own local server
-// relies on - see Form1.cs's MapServerPort), and file:// doesn't qualify.
-// Checked once up front so that case can show one clear explanation
-// instead of every poll attempt silently failing with a cryptic browser
-// permission error every 10 seconds for no benefit.
-var geoAvailable = window.isSecureContext;
+// Live location needs the app's local server behind this page (to know which
+// source is selected, and for the COM-port receiver's fixes). A saved,
+// standalone copy (Save Map, opened later via file://) has none - and
+// browsers don't allow navigator.geolocation from file:// either - so it
+// shows one clear explanation instead of polling for something that can
+// never answer.
+var gpsAvailable = location.protocol === 'http:';
 
-// Bottom-right readout showing whether the browser is actually receiving
-// fresh position fixes and how far off they're expected to be - the ""you
-// are here"" dot alone can't distinguish a genuinely stalled GPS from one
-// that's just not moving because a real device isn't moving. This ticks
-// once a second so a fix that stops arriving (e.g. Windows/the browser
-// falls back to a static Wi-Fi-based location) shows growing as ""updated
-// Xs ago"" instead of silently looking current forever.
+// Bottom-right readout showing whether fresh position fixes are actually
+// arriving and how far off they're expected to be - the ""you are here"" dot
+// alone can't distinguish a stalled source from one that's just not moving
+// because you aren't. Ticks once a second so a fix that stops arriving shows
+// growing as ""updated Xs ago"" instead of looking current.
 var gpsStatusEl = document.getElementById('gpsStatus');
 var lastFixTimestamp = null;
 var lastFixAccuracy = null;
 
-// Shown alongside the fix info so a permission problem (blocked, or never
-// answered) is visible on sight instead of looking identical to ""just
-// hasn't gotten a fix yet"" - the two look the same from lastFixTimestamp
-// alone. Queried once up front and kept live via onchange, since Chrome
-// remembers a per-site grant/block permanently once set (via the address
-// bar's padlock, or a past prompt response) - unlike a fix, this can be
-// checked immediately, with no location request needed at all.
+// From the last /gps answer: the selected source (null until the first
+// answer), the COM port and the app's status message for it (e.g. ""COM3 not
+// available"") while it has no fix, and whether /gps itself stopped
+// answering (the app was closed).
+var gpsSource = null;
+var gpsPortName = '';
+var gpsStatusMessage = '';
+var gpsServerLost = false;
+
+// Windows / Browser Location only: the browser's permission for this page to
+// use location, shown alongside the fix info so a blocked or never-answered
+// permission is visible on sight instead of looking identical to ""hasn't got
+// a fix yet"". Queried once up front and kept live via onchange - Chrome
+// remembers a per-site grant/block permanently once set (the fixed map
+// server port keeps this page the same site every time - see
+// Form1.MapServerPort).
 var geoPermissionState = null;
-if (navigator.permissions && navigator.permissions.query) {
+if (gpsAvailable && navigator.permissions && navigator.permissions.query) {
   navigator.permissions.query({ name: 'geolocation' }).then(function (result) {
     geoPermissionState = result.state;
     updateGpsStatusText();
@@ -1056,33 +1157,51 @@ if (navigator.permissions && navigator.permissions.query) {
     };
   }).catch(function () { /* Permissions API unsupported here - just omitted below. */ });
 }
+// The browser's own error for the last failed request (permission denied,
+// timed out, ...), cleared by the next successful fix.
+var browserLocationError = '';
 
 function updateGpsStatusText() {
   if (!gpsStatusEl) return;
 
-  if (!geoAvailable) {
+  if (!gpsAvailable) {
     gpsStatusEl.hidden = false;
     gpsStatusEl.textContent = 'GPS: not available in a saved file - use Show Map in the app for live tracking.';
     return;
   }
 
+  if (gpsServerLost) {
+    gpsStatusEl.hidden = false;
+    gpsStatusEl.textContent = 'GPS: lost connection to the app - is it still running?';
+    return;
+  }
+
+  if (gpsSource === null) return;
+
+  gpsStatusEl.hidden = false;
+  if (gpsSource === 'off') {
+    gpsStatusEl.textContent = 'GPS: off (pick a location source in the GPS dropdown in the app)';
+    return;
+  }
+
+  var label = gpsSource === 'serial' ? 'GPS (' + gpsPortName + ')' : 'Windows location';
   var parts = [];
-  if (geoPermissionState) parts.push('permission: ' + geoPermissionState);
+  if (gpsSource === 'browser' && geoPermissionState && geoPermissionState !== 'granted') parts.push('permission: ' + geoPermissionState);
   if (lastFixTimestamp !== null) {
     var seconds = Math.max(0, Math.round((Date.now() - lastFixTimestamp) / 1000));
     var ago = seconds < 60 ? (seconds + 's ago') : (Math.round(seconds / 60) + 'm ago');
     parts.push('±' + Math.round(lastFixAccuracy) + ' m, updated ' + ago);
+  } else if (gpsSource === 'serial') {
+    parts.push(gpsStatusMessage || 'waiting for a fix...');
+  } else {
+    parts.push(browserLocationError || 'waiting for a location...');
   }
-  if (parts.length === 0) return;
-
-  gpsStatusEl.hidden = false;
-  gpsStatusEl.textContent = 'GPS: ' + parts.join(', ');
+  gpsStatusEl.textContent = label + ': ' + parts.join(', ');
 }
 setInterval(updateGpsStatusText, 1000);
 
 // Set when the button is clicked before any fix has arrived yet - resolved
-// (flown to) by the next onLocationFound instead of requesting a second,
-// one-off fix that would race the poll running below.
+// (flown to) by the next onLocationFound.
 var pendingRecenter = false;
 
 // ""Follow me"" mode: once you've pressed the recenter button, later fixes
@@ -1104,8 +1223,8 @@ map.on('dragstart zoomstart', function () {
 });
 
 function recenterOnMe() {
-  if (!geoAvailable) {
-    updateGpsStatusText(); // surfaces the ""not available in a saved file"" explanation right away
+  if (!gpsAvailable || gpsSource === 'off') {
+    updateGpsStatusText(); // surfaces the ""not available in a saved file"" / ""GPS off"" explanation right away
     return;
   }
   followMode = true;
@@ -1352,11 +1471,25 @@ function checkNearbyParks(lat, lon) {
   }
 }
 
+// Fixes that land within this distance of where the dot is already drawn
+// only refresh the status readout (""updated Xs ago"", accuracy) - they skip
+// moving the dot, the in-park check against every boundary/trail, and any
+// follow-me panning. A receiver reporting once a second while you sit at
+// your operating spot jitters by a meter or two, so without this the map
+// would redo all of that work every second for no visible change.
+// Compared against the last DRAWN position, not the last fix, so slow
+// drift still adds up and moves the dot once it passes the threshold.
+var MinMoveMeters = 5;
+
 function onLocationFound(e) {
   clearLocatePending();
+  browserLocationError = '';
   lastFixTimestamp = e.timestamp || Date.now();
   lastFixAccuracy = e.accuracy;
   updateGpsStatusText();
+
+  if (youMarker && !pendingRecenter && map.distance(youMarker.getLatLng(), e.latlng) < MinMoveMeters) return;
+
   checkNearbyParks(e.latlng.lat, e.latlng.lng);
 
   var popupHtml = 'Your location (±' + Math.round(e.accuracy) + ' m)';
@@ -1404,74 +1537,108 @@ function onLocationFound(e) {
   }
 }
 
+// A failed Windows / Browser Location request: not worth a popup, but shown
+// in the gpsStatus readout so a permission-denied / unavailable / timed-out
+// failure is visible instead of looking like the map is just waiting on a
+// first fix forever. A pending recenter-button click shouldn't be left
+// waiting forever on a fix that isn't coming either.
 function onLocationError(e) {
   clearLocatePending();
-  // Not worth interrupting the user with a popup about, but shown in the
-  // gpsStatus readout (see its declaration above) so a permission-denied /
-  // unavailable / timed-out failure is visible instead of silently looking
-  // like the map is just waiting on a first fix forever. A pending button
-  // click also shouldn't be left waiting forever on a fix that isn't
-  // coming, so it's cleared here too.
-  if (gpsStatusEl) {
-    gpsStatusEl.hidden = false;
-    gpsStatusEl.textContent = 'GPS: ' + (e && e.message ? e.message : 'location unavailable');
-  }
+  browserLocationError = e && e.message ? e.message : 'location unavailable';
   if (recenterButton) {
     recenterButton.classList.remove('waiting');
     recenterButton.title = 'Center on my location';
   }
   pendingRecenter = false;
+  updateGpsStatusText();
 }
 
-// Everything below actually calls navigator.geolocation - skipped
-// entirely when geoAvailable is false (see its declaration above) so a
-// saved file doesn't spend forever retrying a request the browser will
-// never allow to succeed; updateGpsStatusText's own geoAvailable check
-// already keeps the readout showing a clear explanation the whole time.
-if (geoAvailable) {
+// A browser request still outstanding when the GPS dropdown switches away
+// from Windows / Browser Location is dropped rather than plotted over the
+// new source.
+map.on('locationfound', function (e) {
+  if (gpsSource === 'browser') onLocationFound(e); else clearLocatePending();
+});
+map.on('locationerror', function (e) {
+  if (gpsSource === 'browser') onLocationError(e); else clearLocatePending();
+});
 
-map.on('locationfound', onLocationFound);
-map.on('locationerror', onLocationError);
+// Clears the ""you are here"" dot and everything derived from it, so
+// switching sources (or turning GPS off, or a lost fix) never leaves a stale
+// position on screen.
+function clearYouMarker() {
+  if (youMarker) { map.removeLayer(youMarker); youMarker = null; }
+  if (youAccuracyCircle) { map.removeLayer(youAccuracyCircle); youAccuracyCircle = null; }
+  lastFixTimestamp = null;
+  lastFixAccuracy = null;
+  browserLocationError = '';
+  followMode = false;
+  pendingRecenter = false;
+  if (recenterButton) {
+    recenterButton.classList.remove('waiting');
+    recenterButton.title = 'Center on my location';
+  }
+  if (infoBarEl) infoBarEl.hidden = true;
+}
 
-// Deliberately NOT also running map.locate({watch:true}) (a persistent
-// navigator.geolocation.watchPosition subscription) alongside the poll
-// below - confirmed directly, by comparing this page's own repeated
-// one-shot requests against the same test run on a page with no
-// competing geolocation activity at all: this origin, with only the poll
-// below active, resolved fine, while adding a concurrent watchPosition
-// subscription (as this app used to run alongside the poll) made
-// requests here take dramatically longer than the very same code on a
-// page with nothing else calling the geolocation API. Whatever the exact
-// mechanism, running two overlapping geolocation subscriptions on one
-// page was the actual source of the stalls, not the poll's cadence or
-// this origin itself. A single one-shot request every tick - never a
-// second, independent subscription running at the same time - keeps
-// exactly one request outstanding, period, which is what actually
-// resolved reliably.
+var lastFixSeq = null;
+
+function pollGps() {
+  fetch('/gps', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (data) {
+    gpsServerLost = false;
+    var source = data.mode === 'serial' && data.serial ? 'serial' : (data.mode === 'browser' ? 'browser' : 'off');
+    var port = source === 'serial' ? data.serial.port : '';
+    if (source !== gpsSource || port !== gpsPortName) {
+      gpsSource = source;
+      gpsPortName = port;
+      lastFixSeq = null;
+      clearYouMarker();
+      if (source === 'browser') requestBrowserLocation(); // don't wait up to 10 s for the first one
+    }
+
+    if (source === 'serial') {
+      gpsStatusMessage = data.serial.status || '';
+      var fix = data.serial.fix;
+      if (!fix) {
+        // Receiver lost its fix (or was unplugged) - drop the dot rather
+        // than leave it showing a position that's no longer current.
+        if (lastFixTimestamp !== null) clearYouMarker();
+      } else if (fix.seq !== lastFixSeq) {
+        lastFixSeq = fix.seq;
+        onLocationFound({
+          latlng: L.latLng(fix.lat, fix.lon),
+          accuracy: fix.accuracy,
+          timestamp: Date.now() - fix.ageMs
+        });
+      }
+    }
+    updateGpsStatusText();
+  }).catch(function () {
+    gpsServerLost = true;
+    updateGpsStatusText();
+  });
+}
+
+// ---- Windows / Browser Location polling (only while that source is
+// selected). One one-shot request at a time, every 10 seconds.
+//
+// Deliberately NOT a persistent map.locate({watch:true}) subscription
+// alongside this poll - confirmed directly, by comparing this page's own
+// repeated one-shot requests against the same test on a page with no
+// competing geolocation activity: with a concurrent watchPosition
+// subscription running, requests here took dramatically longer. Exactly one
+// request outstanding at a time is what actually resolved reliably.
 //
 // locatePending guards against firing a new request while one's still
-// outstanding - confirmed necessary, not just theoretical: at a tight 1s
-// tick with no guard, a real fix here takes longer than that to resolve
-// (this OS/browser combination is evidently going through a several-second
-// Wi-Fi-based lookup, not an instant GPS read), so a new locate() request
-// was starting on top of the previous unfinished one every tick, and they
-// started timing each other out (""GPS: Geolocation error: Timeout
-// expired"") instead of resolving. Checking on every tick but only
-// actually starting a request when the last one has finished means this
-// still can't pile up requests even at a much shorter interval than the
-// 10s below - it's a correctness guard, not just a battery-saving one.
+// outstanding - confirmed necessary: a real fix here goes through a
+// several-second Wi-Fi-based lookup, and overlapping requests started timing
+// each other out (""Timeout expired"") instead of resolving.
 //
-// locatePendingTimeoutId is a second, independent safety net on top of
-// that: confirmed directly (via the page's own live state, not just
-// theory) that a locate() call here can occasionally call back neither
-// onLocationFound nor onLocationError at all - it just never resolves -
-// even with an explicit timeout passed below. Without this, that single
-// hung request would leave locatePending stuck true forever, permanently
-// blocking every future tick and silently stopping the readout from ever
-// updating again. Whichever handler does eventually fire clears this
-// timer; if neither ever does, it fires on its own and forces the next
-// tick to try again anyway - a hung request degrades to ""one skipped
-// update"", never ""polling stops for good"".
+// locatePendingTimeoutId is a second, independent safety net: confirmed that
+// a locate() call can occasionally call back neither handler at all, even
+// with an explicit timeout. Without this, that one hung request would leave
+// locatePending stuck true forever and stop the readout updating for good;
+// with it, a hung request degrades to ""one skipped update"".
 var locatePending = false;
 var locatePendingTimeoutId = null;
 
@@ -1483,14 +1650,20 @@ function clearLocatePending() {
   }
 }
 
-setInterval(function () {
-  if (locatePending) return;
+function requestBrowserLocation() {
+  if (gpsSource !== 'browser' || locatePending) return;
   locatePending = true;
   locatePendingTimeoutId = setTimeout(clearLocatePending, 15000);
   map.locate({ setView: false, enableHighAccuracy: true, maximumAge: 0, timeout: 10000 });
-}, 10000);
+}
 
-} // if (geoAvailable)
+if (gpsAvailable) {
+  pollGps();
+  setInterval(pollGps, 1000);
+  setInterval(requestBrowserLocation, 10000);
+} else {
+  updateGpsStatusText();
+}
 </script>
 </body>
 </html>";

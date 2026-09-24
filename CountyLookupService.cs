@@ -135,6 +135,32 @@ namespace PotaActivatorParkActivations
             return ("", "");
         }
 
+        // The state a point is actually inside ("" if none) - for the GPS
+        // receiver's position (see Form1's automatic State dropdown choice).
+        // Unlike FindCounty, deliberately no nearest-county fallback: a GPS
+        // fix out in a lake, over the border in Canada, or anywhere else
+        // outside every county should pick no state at all, not whichever
+        // one happens to be closest.
+        public static string FindStateContaining(double latitude, double longitude)
+        {
+            try
+            {
+                foreach (var county in EnsureLoaded())
+                {
+                    if (longitude < county.MinLon || longitude > county.MaxLon ||
+                        latitude < county.MinLat || latitude > county.MaxLat)
+                        continue;
+                    if (PointInCounty(longitude, latitude, county))
+                        return FipsToState.TryGetValue(county.StateFips, out var abbr) ? abbr : "";
+                }
+            }
+            catch
+            {
+                // counties.json missing/unreadable - no state, same as FindCounty.
+            }
+            return "";
+        }
+
         // Finds the county whose boundary is geometrically closest to the
         // point, used only when the point isn't strictly inside any county's
         // polygon. Checks distance to every edge segment of every county -

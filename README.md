@@ -16,11 +16,12 @@ Built by Jeremy S. Gaynor, K5JSG.
 - **Interactive map**:
   - Park pins color-coded by status (not worked / boat-access-only / worked)
   - Toggleable park boundary, National Trail, and SOTA summit layers
-  - Live GPS "follow me" tracking
+  - Live GPS "follow me" tracking from a GPS receiver on a COM port or the Windows/browser location, picked from the GPS dropdown
   - Distance measuring tool and address search
   - Live readout of grid square, CQ/ITU zone, and lat/long under your mouse
+  - Downloadable **offline street map** per state (the Offline Map checkbox) — roads, trails, parks, wildlife areas and house numbers in the standard OpenStreetMap look, with no internet needed
   - Save the map out to a file
-- **Built for the field** — parks, boundaries, trails, elevation, and SOTA data are all cached locally, so the app keeps working with no signal once you've loaded a state at least once.
+- **Built for the field** — parks, boundaries, trails, elevation, SOTA data, park activation history (refreshed once a day), and (once downloaded) the state's street map are all kept locally, so the app and its map keep working with no signal once you've loaded a state and shown its map at least once.
 
 ## Installation
 
@@ -45,3 +46,5 @@ This publishes a self-contained, single-file executable to `publish\` and, if In
 ## License
 
 GNU General Public License v3.0 — see [License.txt](License.txt).
+
+Offline map data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), available under the Open Database License, via the [Protomaps](https://protomaps.com) basemap. The offline map style follows [openstreetmap-carto](https://github.com/gravitystorm/openstreetmap-carto) (CC0). Built-in map libraries: [Leaflet](https://leafletjs.com) (BSD-2-Clause) and [protomaps-leaflet](https://github.com/protomaps/protomaps-leaflet) (BSD-3-Clause) — their license texts are in `MapAssets/`.

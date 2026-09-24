@@ -19,13 +19,18 @@
             aboutToolStripMenuItem = new ToolStripMenuItem();
             helpToolStripMenuItem = new ToolStripMenuItem();
             labelState = new Label();
+            pictureBoxLogo = new PictureBox();
             comboBoxState = new ComboBox();
             buttonLoadParks = new Button();
             buttonLoadAdif = new Button();
             buttonExportCsv = new Button();
             buttonExportExcel = new Button();
             buttonShowMap = new Button();
-            buttonSaveMap = new Button();
+            checkBoxSaveMap = new CheckBox();
+            checkBoxOfflineMap = new CheckBox();
+            buttonMapOk = new Button();
+            labelGps = new Label();
+            comboBoxGps = new ComboBox();
             flowLayoutPanelButtons = new FlowLayoutPanel();
             textBoxWwffDate = new TextBox();
             progressBar1 = new ProgressBar();
@@ -35,6 +40,7 @@
             textBoxSearch = new TextBox();
             menuStrip1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)dataGridView1).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)pictureBoxLogo).BeginInit();
             SuspendLayout();
             // 
             // menuStrip1
@@ -59,6 +65,24 @@
             helpToolStripMenuItem.Size = new Size(44, 20);
             helpToolStripMenuItem.Text = "Help";
             helpToolStripMenuItem.Click += helpToolStripMenuItem_Click;
+            // 
+            // pictureBoxLogo
+            // 
+            // The program's logo, in the otherwise-empty top-right corner,
+            // as tall as the header allows: from just under the menu bar to
+            // just above the grid (y 26-146; the grid starts at 150). Image is
+            // set in Form1's constructor from AppLogo (built into the exe).
+            // Anchored right so it stays in the corner as the window resizes;
+            // flowLayoutPanelButtons, progressBar1 and textBoxStatus all stop
+            // short of it (see their Sizes) so none of them runs under it.
+            pictureBoxLogo.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            pictureBoxLogo.BackColor = Color.Transparent;
+            pictureBoxLogo.Location = new Point(1328, 26);
+            pictureBoxLogo.Name = "pictureBoxLogo";
+            pictureBoxLogo.Size = new Size(120, 120);
+            pictureBoxLogo.SizeMode = PictureBoxSizeMode.Zoom;
+            pictureBoxLogo.TabIndex = 19;
+            pictureBoxLogo.TabStop = false;
             // 
             // labelState
             // 
@@ -127,16 +151,61 @@
             buttonShowMap.UseVisualStyleBackColor = true;
             buttonShowMap.Click += buttonShowMap_Click;
             //
-            // buttonSaveMap
+            // checkBoxSaveMap
             //
-            buttonSaveMap.Enabled = false;
-            buttonSaveMap.Margin = new Padding(0, 0, 10, 10);
-            buttonSaveMap.Name = "buttonSaveMap";
-            buttonSaveMap.Size = new Size(150, 25);
-            buttonSaveMap.TabIndex = 2;
-            buttonSaveMap.Text = "Save Map...";
-            buttonSaveMap.UseVisualStyleBackColor = true;
-            buttonSaveMap.Click += buttonSaveMap_Click;
+            // This row sits under the button row (below Load ADIF File):
+            // check Save Map and/or Offline Map, then OK does whichever are
+            // checked - see buttonMapOk_Click.
+            checkBoxSaveMap.AutoSize = true;
+            checkBoxSaveMap.Enabled = false;
+            checkBoxSaveMap.Location = new Point(425, 74);
+            checkBoxSaveMap.Name = "checkBoxSaveMap";
+            checkBoxSaveMap.Size = new Size(79, 20);
+            checkBoxSaveMap.TabIndex = 14;
+            checkBoxSaveMap.Text = "Save Map";
+            checkBoxSaveMap.UseVisualStyleBackColor = true;
+            checkBoxSaveMap.CheckedChanged += MapOptionCheckBox_CheckedChanged;
+            //
+            // checkBoxOfflineMap
+            //
+            checkBoxOfflineMap.AutoSize = true;
+            checkBoxOfflineMap.Location = new Point(512, 74);
+            checkBoxOfflineMap.Name = "checkBoxOfflineMap";
+            checkBoxOfflineMap.Size = new Size(92, 20);
+            checkBoxOfflineMap.TabIndex = 15;
+            checkBoxOfflineMap.Text = "Offline Map";
+            checkBoxOfflineMap.UseVisualStyleBackColor = true;
+            checkBoxOfflineMap.CheckedChanged += MapOptionCheckBox_CheckedChanged;
+            //
+            // buttonMapOk
+            //
+            buttonMapOk.Enabled = false;
+            buttonMapOk.Location = new Point(612, 71);
+            buttonMapOk.Name = "buttonMapOk";
+            buttonMapOk.Size = new Size(60, 25);
+            buttonMapOk.TabIndex = 16;
+            buttonMapOk.Text = "OK";
+            buttonMapOk.UseVisualStyleBackColor = true;
+            buttonMapOk.Click += buttonMapOk_Click;
+            //
+            // labelGps
+            //
+            labelGps.AutoSize = true;
+            labelGps.Location = new Point(690, 75);
+            labelGps.Name = "labelGps";
+            labelGps.Size = new Size(34, 16);
+            labelGps.TabIndex = 17;
+            labelGps.Text = "GPS:";
+            //
+            // comboBoxGps
+            //
+            comboBoxGps.DropDownStyle = ComboBoxStyle.DropDownList;
+            comboBoxGps.Location = new Point(728, 71);
+            comboBoxGps.Name = "comboBoxGps";
+            comboBoxGps.Size = new Size(160, 24);
+            comboBoxGps.TabIndex = 18;
+            comboBoxGps.DropDown += comboBoxGps_DropDown;
+            comboBoxGps.SelectionChangeCommitted += comboBoxGps_SelectionChangeCommitted;
             //
             // flowLayoutPanelButtons
             //
@@ -158,11 +227,10 @@
             flowLayoutPanelButtons.Controls.Add(buttonExportCsv);
             flowLayoutPanelButtons.Controls.Add(buttonExportExcel);
             flowLayoutPanelButtons.Controls.Add(buttonShowMap);
-            flowLayoutPanelButtons.Controls.Add(buttonSaveMap);
             flowLayoutPanelButtons.Location = new Point(265, 36);
             flowLayoutPanelButtons.Margin = new Padding(0);
             flowLayoutPanelButtons.Name = "flowLayoutPanelButtons";
-            flowLayoutPanelButtons.Size = new Size(1183, 31);
+            flowLayoutPanelButtons.Size = new Size(1055, 31);
             flowLayoutPanelButtons.TabIndex = 13;
             flowLayoutPanelButtons.WrapContents = true;
             //
@@ -188,7 +256,7 @@
             progressBar1.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             progressBar1.Location = new Point(12, 105);
             progressBar1.Name = "progressBar1";
-            progressBar1.Size = new Size(1436, 15);
+            progressBar1.Size = new Size(1308, 15);
             progressBar1.TabIndex = 2;
             // 
             // textBoxStatus
@@ -204,7 +272,7 @@
             textBoxStatus.Location = new Point(12, 125);
             textBoxStatus.Name = "textBoxStatus";
             textBoxStatus.ReadOnly = true;
-            textBoxStatus.Size = new Size(1336, 16);
+            textBoxStatus.Size = new Size(1308, 16);
             textBoxStatus.TabIndex = 1;
             textBoxStatus.TabStop = false;
             textBoxStatus.Text = "Ready.";
@@ -255,11 +323,17 @@
             // may need its own horizontal scrollbar at the very smallest
             // sizes, which is an acceptable trade-off there.
             ClientSize = new Size(1460, 639);
+            Controls.Add(pictureBoxLogo);
             Controls.Add(dataGridView1);
             Controls.Add(textBoxStatus);
             Controls.Add(progressBar1);
             Controls.Add(textBoxWwffDate);
             Controls.Add(flowLayoutPanelButtons);
+            Controls.Add(checkBoxSaveMap);
+            Controls.Add(checkBoxOfflineMap);
+            Controls.Add(buttonMapOk);
+            Controls.Add(labelGps);
+            Controls.Add(comboBoxGps);
             Controls.Add(comboBoxState);
             Controls.Add(labelState);
             Controls.Add(labelSearch);
@@ -273,6 +347,7 @@
             menuStrip1.ResumeLayout(false);
             menuStrip1.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)dataGridView1).EndInit();
+            ((System.ComponentModel.ISupportInitialize)pictureBoxLogo).EndInit();
             ResumeLayout(false);
             PerformLayout();
         }
@@ -281,13 +356,18 @@
         private System.Windows.Forms.ToolStripMenuItem helpToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem aboutToolStripMenuItem;
         private System.Windows.Forms.Label labelState;
+        private System.Windows.Forms.PictureBox pictureBoxLogo;
         private System.Windows.Forms.ComboBox comboBoxState;
         private System.Windows.Forms.Button buttonLoadParks;
         private System.Windows.Forms.Button buttonLoadAdif;
         private System.Windows.Forms.Button buttonExportCsv;
         private System.Windows.Forms.Button buttonExportExcel;
         private System.Windows.Forms.Button buttonShowMap;
-        private System.Windows.Forms.Button buttonSaveMap;
+        private System.Windows.Forms.CheckBox checkBoxSaveMap;
+        private System.Windows.Forms.CheckBox checkBoxOfflineMap;
+        private System.Windows.Forms.Button buttonMapOk;
+        private System.Windows.Forms.Label labelGps;
+        private System.Windows.Forms.ComboBox comboBoxGps;
         private System.Windows.Forms.FlowLayoutPanel flowLayoutPanelButtons;
         private System.Windows.Forms.TextBox textBoxWwffDate;
         private System.Windows.Forms.ProgressBar progressBar1;

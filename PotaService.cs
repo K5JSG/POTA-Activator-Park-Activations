@@ -244,11 +244,13 @@ namespace PotaActivatorParkActivations
             public DateTime? LastDate { get; set; }
         }
 
-        // Looks up ONE park's activation history from the POTA API.
-        // If the lookup fails for any reason (no internet, park not found, POTA API
-        // hiccup, etc.) this quietly returns an "empty" result instead of throwing,
-        // so one bad park doesn't stop the whole map from being built.
-        public static async Task<ActivationInfo> GetActivationInfoAsync(HttpClient http, string reference)
+        // Looks up ONE park's activation history from the POTA API. Returns
+        // null if the lookup fails for any reason (no internet, POTA API
+        // hiccup, etc.) instead of throwing, so one bad park doesn't stop the
+        // whole map from being built - and so FetchActivationInfoAsync can
+        // tell "couldn't check" (keep what's cached) apart from a real answer
+        // of zero activations (worth caching).
+        public static async Task<ActivationInfo?> GetActivationInfoAsync(HttpClient http, string reference)
         {
             var info = new ActivationInfo();
             try
@@ -296,7 +298,7 @@ namespace PotaActivatorParkActivations
             }
             catch
             {
-                // Leave info as an "empty" result (Count = 0) if anything goes wrong.
+                return null;
             }
             return info;
         }
@@ -311,36 +313,154 @@ namespace PotaActivatorParkActivations
             return null;
         }
 
-        // Looks up activation history for a whole list of parks at once, in parallel
-        // (a handful of requests at a time, so we don't hammer POTA's free API).
-        public static async Task<Dictionary<string, ActivationInfo>> FetchActivationInfoAsync(
-            HttpClient http, List<ParkRecord> parks, IProgress<int> progress)
+        private const string ActivationCacheFileName = "ActivationInfo.cache.csv";
+
+        // How long a park's cached activation history is used as-is before
+        // Show Map looks it up again - a once-a-day refresh. Activation
+        // history only ever grows by the odd activation here and there, and
+        // this is what lets the map open with no signal in the field.
+        private static readonly TimeSpan ActivationCacheMaxAge = TimeSpan.FromHours(24);
+
+        // After this many lookups in a row fail with none succeeding, the
+        // connection is treated as down and every remaining park uses its
+        // cached history straight away - otherwise a connection that hangs
+        // rather than failing fast (e.g. a hotspot with no data) would make
+        // Show Map wait out every park's 15-second timeout one batch at a
+        // time.
+        private const int ActivationGiveUpAfterFailures = 6;
+
+        // The result of FetchActivationInfoAsync: every park's activation
+        // info, how many parks' fresh lookups failed, and the oldest cached
+        // copy used in their place (null if none had one) - so Show Map can
+        // say when the history it's showing isn't current.
+        public sealed record ActivationInfoResult(Dictionary<string, ActivationInfo> Info, int FailedCount, DateTime? OldestStaleUtc);
+
+        // Looks up activation history for a whole list of parks at once, in
+        // parallel (a handful of requests at a time, so we don't hammer
+        // POTA's free API), preferring the local cache
+        // (ActivationInfo.cache.csv) for any park looked up within the last
+        // day. A lookup that fails falls back to that park's cached copy,
+        // however old - only a park that has never been looked up ends up
+        // with no history while offline.
+        public static async Task<ActivationInfoResult> FetchActivationInfoAsync(
+            HttpClient http, List<ParkRecord> parks, string cacheFolder, IProgress<int> progress)
         {
             var results = new System.Collections.Concurrent.ConcurrentDictionary<string, ActivationInfo>(StringComparer.OrdinalIgnoreCase);
-            int total = parks.Count;
-            if (total == 0) return new Dictionary<string, ActivationInfo>(StringComparer.OrdinalIgnoreCase);
+            if (parks.Count == 0) return new ActivationInfoResult(new Dictionary<string, ActivationInfo>(StringComparer.OrdinalIgnoreCase), 0, null);
 
-            int completed = 0;
-            using var semaphore = new SemaphoreSlim(6);
-
-            var tasks = parks.Select(async park =>
+            var cache = LoadActivationCache(cacheFolder);
+            var toFetch = new List<ParkRecord>();
+            foreach (var park in parks)
             {
-                await semaphore.WaitAsync();
-                try
-                {
-                    var info = await GetActivationInfoAsync(http, park.Reference);
-                    results[park.Reference] = info;
-                }
-                finally
-                {
-                    semaphore.Release();
-                    int done = Interlocked.Increment(ref completed);
-                    progress.Report((int)(done * 100.0 / total));
-                }
-            });
+                if (cache.TryGetValue(park.Reference, out var cached) && DateTime.UtcNow - cached.FetchedUtc < ActivationCacheMaxAge)
+                    results[park.Reference] = cached.Info;
+                else
+                    toFetch.Add(park);
+            }
 
-            await Task.WhenAll(tasks);
-            return new Dictionary<string, ActivationInfo>(results, StringComparer.OrdinalIgnoreCase);
+            DateTime? oldestStale = null;
+            int unavailable = 0;
+            if (toFetch.Count > 0)
+            {
+                int completed = 0, succeeded = 0, failed = 0;
+                using var semaphore = new SemaphoreSlim(6);
+
+                var tasks = toFetch.Select(async park =>
+                {
+                    await semaphore.WaitAsync();
+                    try
+                    {
+                        bool connectionLooksDown = Volatile.Read(ref succeeded) == 0 && Volatile.Read(ref failed) >= ActivationGiveUpAfterFailures;
+                        var info = connectionLooksDown ? null : await GetActivationInfoAsync(http, park.Reference);
+                        if (info != null)
+                        {
+                            Interlocked.Increment(ref succeeded);
+                            lock (cache) cache[park.Reference] = (info, DateTime.UtcNow);
+                            results[park.Reference] = info;
+                        }
+                        else
+                        {
+                            if (!connectionLooksDown) Interlocked.Increment(ref failed);
+                            Interlocked.Increment(ref unavailable);
+                            bool hasStale;
+                            (ActivationInfo Info, DateTime FetchedUtc) stale;
+                            lock (cache) hasStale = cache.TryGetValue(park.Reference, out stale);
+                            results[park.Reference] = hasStale ? stale.Info : new ActivationInfo();
+                            if (hasStale)
+                            {
+                                lock (cache)
+                                {
+                                    if (oldestStale == null || stale.FetchedUtc < oldestStale) oldestStale = stale.FetchedUtc;
+                                }
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        semaphore.Release();
+                        int done = Interlocked.Increment(ref completed);
+                        progress.Report((int)(done * 100.0 / toFetch.Count));
+                    }
+                });
+
+                await Task.WhenAll(tasks);
+                SaveActivationCache(cacheFolder, cache);
+            }
+            else
+            {
+                progress.Report(100);
+            }
+
+            return new ActivationInfoResult(new Dictionary<string, ActivationInfo>(results, StringComparer.OrdinalIgnoreCase), unavailable, oldestStale);
+        }
+
+        // Same ';'-separated layout as AccessMethods.cache.csv. LastCallsign
+        // can't contain ';' (callsigns are letters, digits and '/'), and
+        // LastDate is yyyyMMdd or empty for a park never activated.
+        private static Dictionary<string, (ActivationInfo Info, DateTime FetchedUtc)> LoadActivationCache(string cacheFolder)
+        {
+            var result = new Dictionary<string, (ActivationInfo, DateTime)>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                string path = Path.Combine(cacheFolder, ActivationCacheFileName);
+                if (!File.Exists(path)) return result;
+
+                foreach (string line in File.ReadAllLines(path).Skip(1)) // skip header
+                {
+                    string[] parts = line.Split(';');
+                    if (parts.Length != 5 ||
+                        !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int count) ||
+                        !DateTime.TryParse(parts[4], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var fetched))
+                        continue;
+                    var info = new ActivationInfo { Count = count, LastCallsign = parts[2] };
+                    if (DateTime.TryParseExact(parts[3], "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var lastDate))
+                        info.LastDate = lastDate;
+                    result[parts[0]] = (info, fetched);
+                }
+            }
+            catch
+            {
+                // Fails safe: just means less (or no) cache to work with this run.
+            }
+            return result;
+        }
+
+        private static void SaveActivationCache(string cacheFolder, Dictionary<string, (ActivationInfo Info, DateTime FetchedUtc)> cache)
+        {
+            try
+            {
+                Directory.CreateDirectory(cacheFolder);
+                string path = Path.Combine(cacheFolder, ActivationCacheFileName);
+                var lines = new List<string> { "Reference;Count;LastCallsign;LastDate;FetchedUtc" };
+                lines.AddRange(cache.Select(kv =>
+                    $"{kv.Key};{kv.Value.Info.Count.ToString(CultureInfo.InvariantCulture)};{kv.Value.Info.LastCallsign.Replace(";", "")};" +
+                    $"{kv.Value.Info.LastDate?.ToString("yyyyMMdd", CultureInfo.InvariantCulture) ?? ""};{kv.Value.FetchedUtc:o}"));
+                File.WriteAllLines(path, lines);
+            }
+            catch
+            {
+                // Best-effort - a failed save just means less is cached for next time.
+            }
         }
 
         // ---- Boat-only access, from POTA's own park-info API ----------------------------

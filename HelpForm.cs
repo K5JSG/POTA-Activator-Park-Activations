@@ -17,6 +17,7 @@ namespace PotaActivatorParkActivations
         public HelpForm()
         {
             InitializeComponent();
+            Icon = AppLogo.Icon ?? Icon;
             LoadHelpContent();
 
             // HelpContent.rtf is authored (in WordPad/Word) assuming a normal
