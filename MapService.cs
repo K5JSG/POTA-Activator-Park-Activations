@@ -273,6 +273,8 @@ namespace PotaActivatorParkActivations
   .recenter-control a { color: #1a73e8; }
   .recenter-control a svg { vertical-align: -4px; }
   .recenter-control a.waiting { opacity: 0.5; cursor: wait; }
+  .recenter-control a.following { background-color: #2e7d32; color: #fff; }
+  .recenter-control a.following:hover { background-color: #1b5e20; }
   .coord-box {
     position: absolute; top: 12px; left: 12px; z-index: 1001;
     background: white; padding: 8px 12px; border-radius: 6px;
@@ -394,6 +396,7 @@ namespace PotaActivatorParkActivations
     <label class=""sidebar-row""><input type=""checkbox"" id=""overlayWorked"" checked /> Worked</label>
     <label class=""sidebar-row""><input type=""checkbox"" id=""overlayNotWorked"" checked /> Not worked</label>
     <label class=""sidebar-row""><input type=""checkbox"" id=""overlaySota"" /> SOTA Summits</label>
+    <div class=""sidebar-note"" id=""zoomInNote"" hidden>Zoom in closer to see park boundaries, trails and SOTA summits.</div>
   </div>
   <div class=""sidebar-section"" id=""boundaryLayerSection"" hidden></div>
   <div class=""sidebar-section"">
@@ -428,33 +431,87 @@ function escapeHtml(text) {
     .replace(/""/g, '&quot;');
 }
 
-// A plain filled circle, not a teardrop - matches the real pota.app map's
-// own park markers (confirmed against the live site), not this app's
-// earlier custom pin shape. Fixed pixel dimensions throughout (SVG
-// width/height/viewBox and Leaflet's iconSize are all plain numbers, not
-// percentages or viewport units), so this renders at the same physical size
-// on any screen/DPI - Leaflet divIcon markers also don't scale with map zoom.
-function makeCircleIcon(color, showCheck) {
-  var checkMark = showCheck
-    ? '<path d=""M4 7.3l2 2 4.3-5"" fill=""none"" stroke=""white"" stroke-width=""1.8"" stroke-linecap=""round"" stroke-linejoin=""round""/>'
-    : '';
-  var svg =
-    '<svg width=""14"" height=""14"" viewBox=""0 0 14 14"" xmlns=""http://www.w3.org/2000/svg"">' +
-    '<circle cx=""7"" cy=""7"" r=""6"" fill=""' + color + '"" stroke=""#333333"" stroke-width=""1.2""/>' +
-    checkMark +
-    '</svg>';
-  return L.divIcon({
-    html: svg,
-    className: '',
-    iconSize: [14, 14],
-    iconAnchor: [7, 7],
-    popupAnchor: [0, -7]
-  });
-}
+// Park and SOTA summit markers, drawn on one shared canvas instead of one
+// DOM icon each. A state has ~850 parks and ~700 summits; as individual icons
+// every zoom repositioned 1,500+ elements, which on a slow laptop - with
+// quick zooms/drags - piled up until the tab locked. Same look as the old
+// icons: parks are a plain filled circle (matching the real pota.app map)
+// with a white check mark when worked; summits are a brown peak with a snow
+// cap, drawn with its base on the summit's location. Fixed pixel sizes, so
+// they don't scale with map zoom.
+var MapGlyphMarker = L.CircleMarker.extend({
+  options: { glyph: 'circle', check: false },
 
-var yellowIcon = makeCircleIcon('#FFD500', false);
-var orangeIcon = makeCircleIcon('#FF6700', false);
-var greenIcon = makeCircleIcon('#2E8B22', true);
+  _updatePath: function () {
+    var renderer = this._renderer;
+    if (!renderer._drawing || this._empty()) return;
+    var ctx = renderer._ctx, p = this._point;
+    ctx.save();
+    if (this.options.glyph === 'peak') {
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y - 17);
+      ctx.lineTo(p.x + 9, p.y);
+      ctx.lineTo(p.x - 9, p.y);
+      ctx.closePath();
+      ctx.fillStyle = '#8B4513';
+      ctx.fill();
+      ctx.lineWidth = 1.3;
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = '#3a2312';
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y - 17);
+      ctx.lineTo(p.x + 3.5, p.y - 10);
+      ctx.lineTo(p.x - 3.5, p.y - 10);
+      ctx.closePath();
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+    } else {
+      var r = this._radius;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = this.options.fillColor;
+      ctx.fill();
+      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = '#333333';
+      ctx.stroke();
+      if (this.options.check && r >= 5) {
+        // Same check mark as the old 14px icon (M4 7.3 l2 2 4.3-5 around its
+        // center at 7,7), scaled to this radius.
+        var s = r / 6;
+        ctx.beginPath();
+        ctx.moveTo(p.x - 3 * s, p.y + 0.3 * s);
+        ctx.lineTo(p.x - 1 * s, p.y + 2.3 * s);
+        ctx.lineTo(p.x + 3.3 * s, p.y - 2.7 * s);
+        ctx.lineWidth = 1.8 * s;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.strokeStyle = '#ffffff';
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  },
+
+  // The peak sits above its point, not centered on it - tell the canvas
+  // which area to repaint, and which area counts as a click on it.
+  _updateBounds: function () {
+    if (this.options.glyph !== 'peak') return L.CircleMarker.prototype._updateBounds.call(this);
+    var p = this._point;
+    this._pxBounds = new L.Bounds(p.subtract([11, 19]), p.add([11, 2]));
+  },
+
+  _containsPoint: function (point) {
+    if (this.options.glyph !== 'peak') return L.CircleMarker.prototype._containsPoint.call(this, point);
+    var p = this._point;
+    return point.x >= p.x - 10 && point.x <= p.x + 10 && point.y >= p.y - 18 && point.y <= p.y + 2;
+  }
+});
+
+var ParkColorWorked = '#2E8B22';
+var ParkColorBoatOnly = '#FF6700';
+var ParkColorNotWorked = '#FFD500';
 
 function buildPopupHtml(p) {
   var link = 'https://pota.app/#/park/' + encodeURIComponent(p.reference);
@@ -496,25 +553,6 @@ function buildPopupHtml(p) {
   return html;
 }
 
-// A brown mountain-peak glyph (with a snow-cap highlight) - one fixed icon
-// for every summit, not color-coded by activation status.
-function makeSotaIcon() {
-  var svg =
-    '<svg width=""22"" height=""22"" viewBox=""0 0 22 22"" xmlns=""http://www.w3.org/2000/svg"">' +
-    '<path d=""M11 2 L20 19 L2 19 Z"" fill=""#8B4513"" stroke=""#3a2312"" stroke-width=""1.3"" stroke-linejoin=""round""/>' +
-    '<path d=""M11 2 L14.5 9 L7.5 9 Z"" fill=""#ffffff"" opacity=""0.85""/>' +
-    '</svg>';
-  return L.divIcon({
-    html: svg,
-    className: '',
-    iconSize: [22, 22],
-    iconAnchor: [11, 19],
-    popupAnchor: [0, -17]
-  });
-}
-
-var sotaIcon = makeSotaIcon();
-
 // No outbound link here (unlike buildPopupHtml's pota.app one) - SOTA doesn't
 // publish a simple per-summit URL pattern the way POTA does, so this only
 // shows the summit's own published data.
@@ -551,6 +589,102 @@ function getLayerColor(layer) {
 // GeoJSON/BoundaryFeature order is [lon, lat] - Leaflet wants [lat, lng].
 function pointToLatLng(pt) { return [pt[1], pt[0]]; }
 
+// Detail levels for DRAWING boundaries/trails (see addBoundaryLayers):
+// tolerance is in degrees (0.0002 is roughly 20 m, 0.002 roughly 200 m),
+// 0 = full detail. minPartSize: while zoomed out, polygon pieces/holes
+// smaller than this (degrees across) are skipped - they'd be a pixel or two
+// at that zoom - but a feature's largest piece is always drawn, so no park
+// disappears. Checked in order, first matching minZoom wins. Measured on
+// NY: 256k points full, 152k / 91k / 62k at the coarser levels.
+var BoundaryDetailLevels = [
+  { minZoom: 13, tolerance: 0, minPartSize: 0 },
+  { minZoom: 11, tolerance: 0.0002, minPartSize: 0 },
+  { minZoom: 9, tolerance: 0.0007, minPartSize: 0.0015 },
+  { minZoom: 0, tolerance: 0.002, minPartSize: 0.004 }
+];
+
+function boundaryDetailLevelForZoom(zoom) {
+  // Before the map has a view (getZoom() is undefined) start at the
+  // coarsest level - the first real zoomend swaps in the right one.
+  if (typeof zoom !== 'number' || isNaN(zoom)) return BoundaryDetailLevels.length - 1;
+  for (var i = 0; i < BoundaryDetailLevels.length; i++) {
+    if (zoom >= BoundaryDetailLevels[i].minZoom) return i;
+  }
+  return BoundaryDetailLevels.length - 1;
+}
+
+// Douglas-Peucker simplification of a [lon, lat] point list (iterative, so
+// a long trail can't overflow the call stack). Returns the original list
+// when there's nothing to simplify, or when simplifying would leave fewer
+// than minKeep points (a polygon ring needs at least 4, a line 2).
+function simplifyPointList(points, tolerance, minKeep) {
+  if (tolerance <= 0 || points.length <= minKeep) return points;
+  var keep = new Uint8Array(points.length);
+  keep[0] = 1;
+  keep[points.length - 1] = 1;
+  var tol2 = tolerance * tolerance;
+  var stack = [[0, points.length - 1]];
+  while (stack.length) {
+    var span = stack.pop(), a = span[0], b = span[1];
+    var ax = points[a][0], ay = points[a][1];
+    var dx = points[b][0] - ax, dy = points[b][1] - ay, len2 = dx * dx + dy * dy;
+    var maxD = -1, maxI = -1;
+    for (var i = a + 1; i < b; i++) {
+      var px = points[i][0] - ax, py = points[i][1] - ay;
+      var t = len2 ? Math.max(0, Math.min(1, (px * dx + py * dy) / len2)) : 0;
+      var ex = px - t * dx, ey = py - t * dy, d = ex * ex + ey * ey;
+      if (d > maxD) { maxD = d; maxI = i; }
+    }
+    if (maxD > tol2) {
+      keep[maxI] = 1;
+      stack.push([a, maxI], [maxI, b]);
+    }
+  }
+  var out = [];
+  for (var j = 0; j < points.length; j++) if (keep[j]) out.push(points[j]);
+  return out.length >= minKeep ? out : points;
+}
+
+// A feature's Leaflet lat/lng arrays at one detail level, built once and
+// cached on the feature. Never touches feature.geometry itself.
+function boundaryLatLngs(feature, isLine, level) {
+  var cache = feature.lodLatLngs || (feature.lodLatLngs = {});
+  if (cache[level]) return cache[level];
+  var tolerance = BoundaryDetailLevels[level].tolerance;
+  var minPartSize = BoundaryDetailLevels[level].minPartSize;
+  if (isLine) {
+    cache[level] = feature.geometry.map(function (part) { return simplifyPointList(part[0], tolerance, 2).map(pointToLatLng); });
+    return cache[level];
+  }
+  var sizes = feature.geometry.map(function (part) { return ringExtent(part[0]); });
+  var largest = sizes.indexOf(Math.max.apply(null, sizes));
+  var parts = [];
+  feature.geometry.forEach(function (part, i) {
+    if (minPartSize > 0 && i !== largest && sizes[i] < minPartSize) return;
+    var rings = [];
+    part.forEach(function (ring, r) {
+      if (r > 0 && minPartSize > 0 && ringExtent(ring) < minPartSize) return; // tiny hole
+      rings.push(simplifyPointList(ring, tolerance, 4).map(pointToLatLng));
+    });
+    parts.push(rings);
+  });
+  cache[level] = parts;
+  return cache[level];
+}
+
+// Width or height of a [lon, lat] ring's bounding box, whichever is larger.
+function ringExtent(ring) {
+  var minLon = 180, minLat = 90, maxLon = -180, maxLat = -90;
+  for (var i = 0; i < ring.length; i++) {
+    var p = ring[i];
+    if (p[0] < minLon) minLon = p[0];
+    if (p[0] > maxLon) maxLon = p[0];
+    if (p[1] < minLat) minLat = p[1];
+    if (p[1] > maxLat) maxLat = p[1];
+  }
+  return Math.max(maxLon - minLon, maxLat - minLat);
+}
+
 function buildBoundaryPopupHtml(featureName, layerName) {
   return '<div class=""pota-popup"">' + escapeHtml(featureName) +
     '<div class=""boundary-popup-layer"">' + escapeHtml(layerName) + '</div></div>';
@@ -574,7 +708,7 @@ function buildLeafRow(entry, map) {
   var checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
   checkbox.addEventListener('change', function () {
-    if (checkbox.checked) map.addLayer(entry.group); else map.removeLayer(entry.group);
+    setLayerWanted(entry.group, checkbox.checked);
     if (entry.onChange) entry.onChange();
   });
   entry.checkbox = checkbox;
@@ -688,6 +822,28 @@ function addBoundaryLayers(map) {
   var areaEntries = [];
   var trailEntries = [];
 
+  // All boundaries and trails share one canvas instead of one SVG element
+  // each. With every layer on, a state can have ~1,800 shapes / ~370,000
+  // points; as SVG, every zoom or drag while zoomed out made the browser
+  // rebuild and repaint all of those elements, which on a slow laptop
+  // piled up faster than it could keep up (layers lagging the base map,
+  // then the whole tab freezing). One canvas redraws the same shapes far
+  // more cheaply. tolerance keeps thin lines clickable for their popups.
+  // Own pane just under Leaflet's overlayPane (z-index 400), so the canvas
+  // never covers the GPS dot, its accuracy circle or the measure line.
+  map.createPane('boundaryPane').style.zIndex = 350;
+  var boundaryRenderer = L.canvas({ pane: 'boundaryPane', padding: 0.5, tolerance: 4 });
+
+  // Drawn shapes use a pre-simplified copy of each boundary/trail while
+  // zoomed out, and full detail only from street level in. Leaflet
+  // re-projects every point of every shape at the end of every zoom, so
+  // at state/county zoom full detail (~370,000 points for NY) cost about a
+  // second per zoom on a slow laptop and made the layers visibly lag the
+  // base map. Only the drawing changes: the in-park / near-trail GPS checks
+  // below still use the full-detail feature.geometry.
+  var boundaryShapes = [];
+  var boundaryDetailLevel = boundaryDetailLevelForZoom(map.getZoom());
+
   boundaryLayers.forEach(function (layer) {
     var color = getLayerColor(layer);
     var group = L.layerGroup();
@@ -695,26 +851,36 @@ function addBoundaryLayers(map) {
     layer.features.forEach(function (feature) {
       var popupHtml = buildBoundaryPopupHtml(feature.name, layer.name);
       var shape;
+      var latLngs = boundaryLatLngs(feature, layer.isLine, boundaryDetailLevel);
 
       if (layer.isLine) {
         // Multi-line: one array entry per disconnected segment. Bold: thick,
         // fully-opaque stroke so a trail reads clearly against the tiles.
-        var lines = feature.geometry.map(function (part) { return part[0].map(pointToLatLng); });
-        shape = L.polyline(lines, { color: color, weight: 5, opacity: 1 });
+        shape = L.polyline(latLngs, { color: color, weight: 5, opacity: 1, renderer: boundaryRenderer, smoothFactor: 1.5 });
       } else {
         // Multi-polygon-with-holes: part[0] is a piece's outer ring, any
         // further rings in that part are holes cut out of it.
-        var parts = feature.geometry.map(function (part) {
-          return part.map(function (ring) { return ring.map(pointToLatLng); });
-        });
-        shape = L.polygon(parts, { color: color, weight: 1.5, fillColor: color, fillOpacity: 0.18 });
+        // smoothFactor: Leaflet also re-simplifies each shape for the current
+        // zoom (in screen pixels). 2 is still well under what's visible.
+        shape = L.polygon(latLngs, { color: color, weight: 1.5, fillColor: color, fillOpacity: 0.18, renderer: boundaryRenderer, smoothFactor: 2 });
       }
 
       shape.bindPopup(popupHtml).addTo(group);
+      boundaryShapes.push({ shape: shape, feature: feature, isLine: layer.isLine });
     });
 
     var entry = { name: layer.name, color: color, isLine: layer.isLine, group: group, count: layer.features.length };
     (layer.isLine ? trailEntries : areaEntries).push(entry);
+    gateDetailLayer(group, false);
+  });
+
+  // Swap every shape to the matching detail level - only when a zoom
+  // actually crosses a level boundary, not on every zoom.
+  map.on('zoomend', function () {
+    var level = boundaryDetailLevelForZoom(map.getZoom());
+    if (level === boundaryDetailLevel) return;
+    boundaryDetailLevel = level;
+    boundaryShapes.forEach(function (s) { s.shape.setLatLngs(boundaryLatLngs(s.feature, s.isLine, level)); });
   });
 
   // Left hidden (see its markup) when there's nothing to show - a state
@@ -734,7 +900,77 @@ function addBoundaryLayers(map) {
   if (trailEntries.length > 0) section.appendChild(buildTrailGroup(trailEntries, map));
 }
 
-var map = L.map('map');
+// Leaflet's own +/- zoom buttons would sit top-left, under the coordinate
+// readout (coord-box) - they're added bottom-right instead, stacked above the
+// recenter button (see RecenterControl below).
+var map = L.map('map', { zoomControl: false });
+
+// ---- Detail layers (park boundaries, trails, SOTA summits). Zoomed out to a
+// whole state they'd mean thousands of shapes that every zoom or drag has to
+// re-project and redraw; on a slow laptop, quick zooms/drags at that level
+// piled up faster than it could draw them until the tab locked up. So they
+// only appear from DetailMinZoom in. Sticky on the way back out: once shown
+// they stay until the zoom drops below DetailHideBelowZoom, so zooming back
+// and forth around the threshold doesn't swap everything in and out each
+// time. A layer's checkbox still records what the user asked for (wanted);
+// the layer is on the map only while details are shown as well.
+var DetailMinZoom = 9;
+var DetailHideBelowZoom = 8;
+var detailShown = null; // unknown until the map has a view
+var detailLayers = [];
+var detailShownListeners = [];
+
+// Returns true when detailShown changed.
+function updateDetailShown() {
+  var zoom = map.getZoom();
+  if (typeof zoom !== 'number' || isNaN(zoom)) return false;
+  var was = detailShown;
+  if (detailShown === null) detailShown = zoom >= DetailMinZoom;
+  else if (!detailShown && zoom >= DetailMinZoom) detailShown = true;
+  else if (detailShown && zoom < DetailHideBelowZoom) detailShown = false;
+  return detailShown !== was;
+}
+
+function syncDetailLayer(gate) {
+  var show = gate.wanted && detailShown === true;
+  if (show && !map.hasLayer(gate.layer)) map.addLayer(gate.layer);
+  else if (!show && map.hasLayer(gate.layer)) map.removeLayer(gate.layer);
+}
+
+function gateDetailLayer(layer, wanted) {
+  var gate = { layer: layer, wanted: !!wanted };
+  detailLayers.push(gate);
+  syncDetailLayer(gate);
+  return gate;
+}
+
+// Checkbox handlers call this instead of map.addLayer/removeLayer.
+function setLayerWanted(layer, wanted) {
+  var found = false;
+  detailLayers.forEach(function (gate) {
+    if (gate.layer !== layer) return;
+    found = true;
+    gate.wanted = wanted;
+    syncDetailLayer(gate);
+  });
+  if (!found) { if (wanted) map.addLayer(layer); else map.removeLayer(layer); }
+  updateZoomInNote();
+}
+
+// Explains why a ticked boundary/trail/summit layer isn't showing yet.
+function updateZoomInNote() {
+  var note = document.getElementById('zoomInNote');
+  if (!note) return;
+  note.hidden = !(detailShown === false && detailLayers.some(function (gate) { return gate.wanted; }));
+}
+
+map.on('zoomend', function () {
+  if (updateDetailShown()) {
+    detailLayers.forEach(syncDetailLayer);
+    detailShownListeners.forEach(function (fn) { fn(detailShown); });
+  }
+  updateZoomInNote();
+});
 
 var streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
@@ -748,12 +984,17 @@ var satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/se
   attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
 });
 
+// Parks show at every zoom (canvas markers - see MapGlyphMarker): small
+// while zoomed out, full size with the worked check mark once details show.
 var workedLayer = L.layerGroup().addTo(map);
 var notWorkedLayer = L.layerGroup().addTo(map);
-// Not added to the map here (unlike workedLayer/notWorkedLayer above) - a
-// state can have many summits, so this starts unchecked/off, same convention
-// as the boundary/trail layers below (addBoundaryLayers).
+var markerRenderer = L.canvas({ padding: 0.5, tolerance: 3 });
+var ParkRadiusZoomedOut = 4;
+var ParkRadiusDetail = 6;
+// Starts unchecked/off - a state can have many summits - same convention as
+// the boundary/trail layers below (addBoundaryLayers), and a detail layer too.
 var sotaLayer = L.layerGroup();
+gateDetailLayer(sotaLayer, false);
 
 // Base map + overlay toggles, and (below) the sidebar show/hide button -
 // plain HTML in the #sidebar panel instead of Leaflet's own
@@ -831,14 +1072,14 @@ if (location.protocol === 'http:' && typeof protomapsL !== 'undefined' && window
   setBaseLayer(streetLayer);
 }
 
-function wireOverlayCheckbox(id, layer) {
+function wireOverlayCheckbox(id, layers) {
   document.getElementById(id).addEventListener('change', function (e) {
-    if (e.target.checked) map.addLayer(layer); else map.removeLayer(layer);
+    layers.forEach(function (layer) { setLayerWanted(layer, e.target.checked); });
   });
 }
-wireOverlayCheckbox('overlayWorked', workedLayer);
-wireOverlayCheckbox('overlayNotWorked', notWorkedLayer);
-wireOverlayCheckbox('overlaySota', sotaLayer);
+wireOverlayCheckbox('overlayWorked', [workedLayer]);
+wireOverlayCheckbox('overlayNotWorked', [notWorkedLayer]);
+wireOverlayCheckbox('overlaySota', [sotaLayer]);
 
 var sidebarEl = document.getElementById('sidebar');
 var sidebarToggleEl = document.getElementById('sidebarToggle');
@@ -862,21 +1103,34 @@ updateSidebarToggleVisibility();
 addBoundaryLayers(map);
 
 sotaData.forEach(function (s) {
-  var marker = L.marker([s.lat, s.lon], { icon: sotaIcon });
-  marker.bindPopup(buildSotaPopupHtml(s));
+  var marker = new MapGlyphMarker([s.lat, s.lon], { renderer: markerRenderer, glyph: 'peak', radius: 9 });
+  // Open above the peak (it's drawn above its point), like the old icon's popupAnchor.
+  marker.bindPopup(buildSotaPopupHtml(s), { offset: [0, -10] });
   marker.addTo(sotaLayer);
 });
 
 var bounds = [];
+var parkMarkers = [];
 parkData.forEach(function (p) {
   // (0, 0) is what an ungeocoded park looks like here - it's out in the Gulf
   // of Guinea, nowhere near a real US park, so this only filters those out.
   if (!p.lat && !p.lon) return;
-  var icon = p.completed ? greenIcon : (p.boatAccessOnly ? orangeIcon : yellowIcon);
-  var marker = L.marker([p.lat, p.lon], { icon: icon });
-  marker.bindPopup(buildPopupHtml(p));
+  var marker = new MapGlyphMarker([p.lat, p.lon], {
+    renderer: markerRenderer, radius: ParkRadiusZoomedOut, check: p.completed,
+    fillColor: p.completed ? ParkColorWorked : (p.boatAccessOnly ? ParkColorBoatOnly : ParkColorNotWorked)
+  });
+  // Popup built on first open rather than up front for every park.
+  marker.bindPopup(function () { return buildPopupHtml(p); });
   marker.addTo(p.completed ? workedLayer : notWorkedLayer);
+  parkMarkers.push(marker);
   bounds.push([p.lat, p.lon]);
+});
+
+// Small dots zoomed out, full-size circles (with the worked check mark) once
+// details show - a canvas redraw, not 850 elements swapped in and out.
+detailShownListeners.push(function (shown) {
+  var radius = shown ? ParkRadiusDetail : ParkRadiusZoomedOut;
+  parkMarkers.forEach(function (m) { m.setRadius(radius); });
 });
 
 if (bounds.length > 0) {
@@ -1193,6 +1447,7 @@ function updateGpsStatusText() {
     parts.push('±' + Math.round(lastFixAccuracy) + ' m, updated ' + ago);
   } else if (gpsSource === 'serial') {
     parts.push(gpsStatusMessage || 'waiting for a fix...');
+    if (followMode) parts.push('will keep following when the fix returns');
   } else {
     parts.push(browserLocationError || 'waiting for a location...');
   }
@@ -1217,9 +1472,23 @@ var pendingRecenter = false;
 // started, since Leaflet fires the same zoomstart event either way.
 var followMode = false;
 var programmaticMove = false;
+// Every follow-mode change goes through here so the recenter button always
+// shows the current state - green while following, normal when not.
+function setFollowMode(on) {
+  followMode = on;
+  if (recenterButton) recenterButton.classList.toggle('following', on);
+}
+// When the +/- zoom buttons were last clicked (see zoomControl below) - a
+// zoom starting shortly after one is the button's, not the user's own
+// wheel/pinch zoom, so it mustn't cancel follow mode.
+var lastZoomButtonClickMs = 0;
+var ZoomButtonGraceMs = 1500;
 map.on('moveend', function () { programmaticMove = false; });
-map.on('dragstart zoomstart', function () {
-  if (!programmaticMove) followMode = false;
+map.on('dragstart', function () {
+  if (!programmaticMove) setFollowMode(false);
+});
+map.on('zoomstart', function () {
+  if (!programmaticMove && Date.now() - lastZoomButtonClickMs > ZoomButtonGraceMs) setFollowMode(false);
 });
 
 function recenterOnMe() {
@@ -1227,7 +1496,7 @@ function recenterOnMe() {
     updateGpsStatusText(); // surfaces the ""not available in a saved file"" / ""GPS off"" explanation right away
     return;
   }
-  followMode = true;
+  setFollowMode(true);
   if (youMarker) {
     programmaticMove = true;
     map.flyTo(youMarker.getLatLng(), Math.max(map.getZoom(), 14));
@@ -1264,6 +1533,26 @@ var RecenterControl = L.Control.extend({
 });
 
 map.addControl(new RecenterControl());
+// Added after the recenter button on purpose: Leaflet stacks each new
+// bottom-corner control ABOVE the ones already there, so this puts the
+// +/- buttons directly on top of it.
+var zoomControl = L.control.zoom({ position: 'bottomright', zoomInTitle: 'Zoom in', zoomOutTitle: 'Zoom out' }).addTo(map);
+
+// A +/- click must NOT cancel follow mode the way a drag or wheel/pinch zoom
+// does - while following, the view is centered on the dot, so these just
+// zoom in/out around you. Recorded in the capture phase, i.e. before
+// Leaflet's own click handler starts the zoom and fires zoomstart. A time
+// window rather than the programmaticMove flag: with several quick clicks,
+// the previous zoom's moveend cleared that flag before the next click's
+// zoomstart, so rapid -/- clicks still switched follow mode off. The window
+// also can't get stuck on the way a flag could when a click at the min/max
+// zoom does nothing.
+zoomControl.getContainer().addEventListener('click', function (e) {
+  var link = e.target.closest ? e.target.closest('a') : null;
+  if (link && (link.classList.contains('leaflet-control-zoom-in') || link.classList.contains('leaflet-control-zoom-out'))) {
+    lastZoomButtonClickMs = Date.now();
+  }
+}, true);
 
 // ---- Live ""am I in/near a park right now"" check, per POTA's own
 // activation rules - not the same question the Xfer's grid column
@@ -1565,14 +1854,18 @@ map.on('locationerror', function (e) {
 
 // Clears the ""you are here"" dot and everything derived from it, so
 // switching sources (or turning GPS off, or a lost fix) never leaves a stale
-// position on screen.
-function clearYouMarker() {
+// position on screen. keepFollow is for a lost fix only: a receiver dropping
+// out for a while (tunnel, trees, a loose cable) mustn't cancel follow mode,
+// or the map would stop following when the fix comes back. The app keeps
+// retrying the receiver and pollGps keeps asking every second, so following
+// simply resumes on the next fix.
+function clearYouMarker(keepFollow) {
   if (youMarker) { map.removeLayer(youMarker); youMarker = null; }
   if (youAccuracyCircle) { map.removeLayer(youAccuracyCircle); youAccuracyCircle = null; }
   lastFixTimestamp = null;
   lastFixAccuracy = null;
   browserLocationError = '';
-  followMode = false;
+  if (!keepFollow) setFollowMode(false);
   pendingRecenter = false;
   if (recenterButton) {
     recenterButton.classList.remove('waiting');
@@ -1601,8 +1894,9 @@ function pollGps() {
       var fix = data.serial.fix;
       if (!fix) {
         // Receiver lost its fix (or was unplugged) - drop the dot rather
-        // than leave it showing a position that's no longer current.
-        if (lastFixTimestamp !== null) clearYouMarker();
+        // than leave it showing a position that's no longer current, but
+        // stay in follow mode so the map picks up again on the next fix.
+        if (lastFixTimestamp !== null) clearYouMarker(true);
       } else if (fix.seq !== lastFixSeq) {
         lastFixSeq = fix.seq;
         onLocationFound({

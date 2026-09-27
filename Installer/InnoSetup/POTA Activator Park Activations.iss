@@ -100,6 +100,129 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} now"; \
 
 [Code]
 
+// Every update is a clean uninstall + reinstall rather than an in-place
+// overwrite, so Installed Apps only ever shows one entry and no file dropped
+// by a newer version is left behind in the program folder. That covers:
+//   - earlier releases of this Inno Setup installer (same AppId),
+//   - the old Visual Studio Installer Projects MSI builds, which have their
+//     own entries - including the ones from before the rename, when the
+//     product was called "POTA Check".
+// User data lives in %LocalAppData% (see GetWritableAppDataFolder in
+// Form1.cs) and is never touched, so caches and offline maps survive.
+
+const
+  UninstallKeyRoot = 'Software\Microsoft\Windows\CurrentVersion\Uninstall';
+  LegacyAppName = 'POTA Check';
+
+var
+  OldInstallDirs: TArrayOfString;
+
+function IsOurProductName(const Name: String): Boolean;
+begin
+  Result := (CompareText(Name, '{#MyAppName}') = 0) or
+            (CompareText(Name, LegacyAppName) = 0);
+end;
+
+procedure RememberOldInstallDir(const Dir: String);
+var
+  N: Integer;
+begin
+  if Dir = '' then Exit;
+  N := GetArrayLength(OldInstallDirs);
+  SetArrayLength(OldInstallDirs, N + 1);
+  OldInstallDirs[N] := Dir;
+end;
+
+// Only ever wipes a folder that is clearly this app's own (named after the
+// product), never some general-purpose folder the user may have picked on
+// the directory page.
+procedure DeleteAppFolder(Dir: String);
+begin
+  Dir := RemoveBackslashUnlessRoot(Dir);
+  if (Dir <> '') and DirExists(Dir) and IsOurProductName(ExtractFileName(Dir)) then
+  begin
+    DelTree(Dir, True, True, True);
+    // The K5JSG publisher folder above it - RemoveDir only succeeds if empty
+    RemoveDir(ExtractFileDir(Dir));
+  end;
+end;
+
+// Belt and braces: an Inno uninstaller re-launches itself from %TEMP%, and
+// deletes its own unins*.exe as the very last step, so this confirms it has
+// really finished before the new files go in.
+procedure WaitForFileGone(const FileName: String; TimeoutMs: Integer);
+begin
+  while FileExists(FileName) and (TimeoutMs > 0) do
+  begin
+    Sleep(250);
+    TimeoutMs := TimeoutMs - 250;
+  end;
+end;
+
+// Silently uninstalls every installed copy of this app registered under
+// RootKey. Returns an error message, or '' if everything went fine.
+function UninstallOldVersions(RootKey: Integer): String;
+var
+  Names: TArrayOfString;
+  I, ResultCode: Integer;
+  Key, DisplayName, Publisher, Location, Uninstaller: String;
+  IsMsi: Cardinal;
+begin
+  Result := '';
+  if not RegGetSubkeyNames(RootKey, UninstallKeyRoot, Names) then Exit;
+
+  for I := 0 to GetArrayLength(Names) - 1 do
+  begin
+    Key := UninstallKeyRoot + '\' + Names[I];
+    if RegQueryStringValue(RootKey, Key, 'DisplayName', DisplayName) and
+       IsOurProductName(DisplayName) and
+       RegQueryStringValue(RootKey, Key, 'Publisher', Publisher) and
+       (CompareText(Publisher, '{#MyAppPublisher}') = 0) then
+    begin
+      if RegQueryStringValue(RootKey, Key, 'InstallLocation', Location) then
+        RememberOldInstallDir(Location);
+
+      if RegQueryDWordValue(RootKey, Key, 'WindowsInstaller', IsMsi) and (IsMsi = 1) then
+      begin
+        // Old MSI build: the subkey name is its ProductCode. VS Installer
+        // Projects didn't record InstallLocation, so fall back to its default.
+        RememberOldInstallDir(ExpandConstant('{autopf}\{#MyAppPublisher}\') + DisplayName);
+        if not Exec(ExpandConstant('{sys}\msiexec.exe'),
+                    '/x ' + Names[I] + ' /qn /norestart',
+                    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+          ResultCode := -1;
+        // 1605 = already gone, 3010 = done but wants a reboot
+        if (ResultCode <> 0) and (ResultCode <> 1605) and (ResultCode <> 3010) then
+        begin
+          Result := Format('%s could not be removed automatically (error %d).', [DisplayName, ResultCode]);
+          Exit;
+        end;
+      end
+      else if RegQueryStringValue(RootKey, Key, 'UninstallString', Uninstaller) then
+      begin
+        Uninstaller := RemoveQuotes(Uninstaller);
+        RememberOldInstallDir(ExtractFileDir(Uninstaller));
+        if FileExists(Uninstaller) then
+        begin
+          if not Exec(Uninstaller, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART',
+                      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+            ResultCode := -1;
+          if ResultCode <> 0 then
+          begin
+            Result := Format('%s could not be removed automatically (error %d).', [DisplayName, ResultCode]);
+            Exit;
+          end;
+          WaitForFileGone(Uninstaller, 60000);
+        end;
+        // An entry whose uninstaller is missing (folder deleted by hand)
+        // would otherwise linger in Installed Apps forever.
+        if RegKeyExists(RootKey, Key) then
+          RegDeleteKeyIncludingSubkeys(RootKey, Key);
+      end;
+    end;
+  end;
+end;
+
 // Stop a running instance before installing or uninstalling, otherwise the
 // exe is locked and the file copy fails.
 procedure StopRunningApp();
@@ -112,13 +235,41 @@ begin
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  I: Integer;
+  ResultCode: Integer;
 begin
   StopRunningApp();
-  Result := '';
+  Exec(ExpandConstant('{cmd}'),
+       '/C taskkill /F /IM "' + LegacyAppName + '.exe" >nul 2>&1',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  Result := UninstallOldVersions(HKLM64);
+  if Result = '' then Result := UninstallOldVersions(HKLM32);
+  if Result = '' then Result := UninstallOldVersions(HKCU);
+
+  if Result <> '' then
+  begin
+    Result := Result + #13#10#13#10 +
+      'Please uninstall it from Settings > Apps > Installed apps, then run this setup again.';
+    Exit;
+  end;
+
+  // Anything the old uninstallers left behind (files they didn't install
+  // themselves, or files from versions older than their own records)
+  for I := 0 to GetArrayLength(OldInstallDirs) - 1 do
+    DeleteAppFolder(OldInstallDirs[I]);
+  DeleteAppFolder(ExpandConstant('{app}'));
 end;
 
 function InitializeUninstall(): Boolean;
 begin
   StopRunningApp();
   Result := True;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    DeleteAppFolder(ExpandConstant('{app}'));
 end;

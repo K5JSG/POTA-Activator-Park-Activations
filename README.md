@@ -14,9 +14,9 @@ Built by Jeremy S. Gaynor, K5JSG.
 - **Boat Access Only** flag, auto-detected from POTA's own park data.
 - **Export** your finished report to CSV or Excel.
 - **Interactive map**:
-  - Park pins color-coded by status (not worked / boat-access-only / worked)
-  - Toggleable park boundary, National Trail, and SOTA summit layers
-  - Live GPS "follow me" tracking from a GPS receiver on a COM port or the Windows/browser location, picked from the GPS dropdown
+  - Park markers color-coded by status (not worked / boat-access-only / worked), shown as small dots when zoomed out to a whole state
+  - Toggleable park boundary, National Trail, and SOTA summit layers, drawn from county-level zoom in so the map stays responsive on slower laptops
+  - Live GPS "follow me" tracking from a GPS receiver on a COM port or the Windows/browser location, picked from the GPS dropdown — the follow button turns green while following and keeps following through brief GPS dropouts, with zoom buttons right above it
   - Distance measuring tool and address search
   - Live readout of grid square, CQ/ITU zone, and lat/long under your mouse
   - Downloadable **offline street map** per state (the Offline Map checkbox) — roads, trails, parks, wildlife areas and house numbers in the standard OpenStreetMap look, with no internet needed
@@ -25,7 +25,7 @@ Built by Jeremy S. Gaynor, K5JSG.
 
 ## Installation
 
-Download the latest installer from the [Releases](https://github.com/K5JSG/POTA-Activator-Park-Activations/releases) page and run it. The app is self-contained — no separate .NET runtime install is required.
+Download the latest installer from the [Releases](https://github.com/K5JSG/POTA-Activator-Park-Activations/releases) page and run it. The app is self-contained — no separate .NET runtime install is required. Installing a new version first removes any older copy (including very old versions from before the rename), so there's only ever one entry in Installed apps and no leftover files; your downloaded maps and settings are kept.
 
 ## Building from source
 
