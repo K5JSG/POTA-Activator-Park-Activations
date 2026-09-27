@@ -1,7 +1,7 @@
 using System.Diagnostics;
 
-string exePath = @"C:\Users\jsgay\Documents\Ham Radio\POTA Activator Park Activations\bin\Release\net10.0-windows\POTA Activator Park Activations.exe";
-string msiFolder = @"C:\Users\jsgay\Documents\Ham Radio\POTA Activator Park Activations\Installer\POTA Activator Park Activations Installer\Release";
+string exePath = @"C:\Users\jsgay\source\repos\POTA Activator Park Activations\bin\Release\net10.0-windows\POTA Activator Park Activations.exe";
+string msiFolder = @"C:\Users\jsgay\source\repos\POTA Activator Park Activations\Installer\POTA Activator Park Activations Installer\Release";
 string projectName = "POTA Activator Park Activations";
 
 if (!File.Exists(exePath))
