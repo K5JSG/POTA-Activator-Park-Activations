@@ -263,7 +263,7 @@
         "UseSystemSearchPath" = "11:TRUE"
         "TargetPlatform" = "3:1"
         "PreBuildEvent" = "8:"
-        "PostBuildEvent" = "8:dotnet run --project \"C:\\Users\\jsgay\\Documents\\Ham Radio\\POTA Activator Park Activations\\Tools\\RenameMsi\\RenameMsi.csproj\" -c Release\n\n"
+        "PostBuildEvent" = "8:dotnet run --project \"C:\\Users\\jsgay\\source\\repos\\POTA Activator Park Activations\\Tools\\RenameMsi\\RenameMsi.csproj\" -c Release\n\n"
         "RunPostBuildEvent" = "3:0"
         }
         "Registry"
